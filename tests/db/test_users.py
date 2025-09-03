@@ -2,9 +2,8 @@
 Database and repository tests.
 
 These tests exercise the SQLAlchemy helpers and the repository abstraction.
-I mark them with ``db`` so they can be selected independently of API or UI tests.
 """
-# Minor note: added for commit message consistency
+
 
 import pytest
 
