@@ -1,0 +1,17 @@
+[
+  {
+    "id": 1,
+    "title": "Hello World",
+    "body": "This is a sample post for my API tests."
+  },
+  {
+    "id": 2,
+    "title": "Another Post",
+    "body": "Testing JSON API with multiple records."
+  },
+  {
+    "id": 3,
+    "title": "Final Entry",
+    "body": "I built this dataset to feed my mock Flask API."
+  }
+]
