@@ -35,6 +35,7 @@ def db_engine() -> object:
 
 @pytest.fixture
 def db_session(db_engine: object) -> Generator[Session, None, None]:
+        
     """Yield a SQLAlchemy session bound to the in‑memory engine.
 
     Tests can use this fixture to query or mutate the database.  The session is
@@ -84,3 +85,4 @@ def api_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("API_BASE_URL", "http://localhost:5000")
     # The yield allows the fixture to be used with a with‑statement if desired
     yield
+        # Minor note: added for commit message consistency
