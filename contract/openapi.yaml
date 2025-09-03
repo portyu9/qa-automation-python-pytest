@@ -1,0 +1,50 @@
+openapi: 3.0.3
+info:
+  title: Mock Posts API
+  version: 1.0.0
+paths:
+  /posts:
+    get:
+      summary: Get all posts
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Post'
+  /posts/{id}:
+    get:
+      summary: Get post by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
+        '404':
+          description: Not Found
+components:
+  schemas:
+    Post:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        body:
+          type: string
+      required:
+        - id
+        - title
+        - body
