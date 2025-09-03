@@ -18,3 +18,4 @@ pytest.importorskip("locust")
 def test_locustfile_exists() -> None:
     """Ensure the locustfile exists in the performance directory."""
     assert os.path.isfile(os.path.join(os.path.dirname(__file__), "..", "..", "performance", "locustfile.py"))
+    
