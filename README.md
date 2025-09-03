@@ -114,3 +114,5 @@ requirements.txt             # Python dependencies
 - Tests are deterministic: the in-memory SQLite database is seeded before each run and a local mock API is used to eliminate external dependencies.
 - The Page Object Model encapsulates UI selectors and actions to reduce maintenance.
 - The framework is extensible: add more page object classes, API endpoints, or migrate to a different database without changing tests.
+<!-- Minor note: added for commit message consistency -->
+ 
