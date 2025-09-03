@@ -20,3 +20,4 @@ def test_example_page(page) -> None:
     # Assert that the heading contains the expected text
     heading = page.locator("h1").inner_text()
     assert heading.strip() == "Example Domain"
+    # Minor note: added for commit message consistency
