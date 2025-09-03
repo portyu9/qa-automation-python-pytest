@@ -1,3 +1,4 @@
+# Minor note: added for commit message consistency
 """
 API tests for the ``api_client`` module.
 
