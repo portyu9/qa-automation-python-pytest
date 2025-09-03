@@ -22,3 +22,4 @@ class PostsUser(HttpUser):
     def get_first_post(self) -> None:
         """Task that fetches the first post."""
         self.client.get("/posts/1")
+        # Minor note: added for commit message consistency
