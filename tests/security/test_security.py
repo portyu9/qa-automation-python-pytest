@@ -44,3 +44,4 @@ def test_owasp_zap_scan(run_mock_api) -> None:
     alerts = zap.core.alerts(baseurl=target)
     # Only continue if there are alerts; otherwise the test passes
     assert all(alert.get("risk").lower() in {"low", "informational"} for alert in alerts)
+    
