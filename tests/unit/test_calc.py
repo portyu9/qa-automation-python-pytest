@@ -7,7 +7,6 @@ edge cases like division by zero.
 """
 
 import pytest
-
 from src.calc import add, subtract, multiply, divide
 
 
