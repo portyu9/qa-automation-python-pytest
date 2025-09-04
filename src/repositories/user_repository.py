@@ -1,4 +1,4 @@
-"""
+    """
 UserRepository encapsulates database operations for the User model.
 I use SQLAlchemy sessions to abstract queries, returning user objects without exposing
 SQL details to my tests. This class provides convenient methods to initialize
@@ -28,14 +28,11 @@ class UserRepository:
 
         Returns:
             A configured UserRepository instance with an active SQLAlchemy session.
-        """
-   # 
-                engine = create_engine(db_url, echo=False, future=True)
-
+    """    
+        engine = create_engine(db_url, echo=False, future=True)
         init_db(engine)
-        
-                        session = Session(bind=engine)
-                return cls(session)
+        session = Session(bind=engine)
+        return cls(sesion))
 
     def find_all(self):
         """Retrieve all users ordered by their primary key.
