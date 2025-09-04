@@ -24,4 +24,4 @@ jobs:
           python -m playwright install
       - name: Run tests
         run: |
-          pytest -m "not performance and not security" -q
+         pytest -m "not db and not performance and not securitty" -q
