@@ -5,4 +5,6 @@ requests>=2.28.0
 Flask>=2.2.0
 SQLAlchemy>=2.0.0
 pytest-asyncio>=0.18.0
-pytest-mock>=3.7.0
+pytest-mock>=3.7.
+0locust>=2.0.0
+python-owasp-zap-v2.4
