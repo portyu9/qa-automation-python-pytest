@@ -60,4 +60,4 @@ app = create_app()
 
 if __name__ == "__main__":  # pragma: no cover
     # Run the server only when executed as a script.
-app.run(host="0.0.0.0", port=5000)
+        app.run(host="0.0.0.0", port=5000)
