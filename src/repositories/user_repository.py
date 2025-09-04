@@ -1,18 +1,13 @@
-  """
-  
+"""
 UserRepository encapsulates database operations for the User model.
 I use SQLAlchemy sessions to abstract queries, returning user objects without exposing
 SQL details to my tests. This class provides convenient methods to initialize
-an in-memory or file-based database, fetch all users, and fetch a single user
-by id.
+an in-memory or file-based database, fetch all users, and fetch a single user by id.
 """
 
 from sqlalchemy.orm import Session
-
 from sqlalchemy import create_engine
-
-from ..db import get_engine, init_db, User
-
+from ..db import init_db, User
 
 class UserRepository:
     """Repository layer for User database operations."""
@@ -29,24 +24,21 @@ class UserRepository:
 
         Returns:
             A configured UserRepository instance with an active SQLAlchemy session.
-    """    
-               engine = create_engine(db_url, echo=False, future=True)
-            init_db(engine)
-            session = Session(bind=engine)
-            return cls(session)
+        """
+        engine = create_engine(db_url, echo=False, future=True)
         init_db(engine)
         session = Session(bind=engine)
         return cls(session)
-    
-    def find_all(self):
+
+    def find_all(self) -> list[User]:
         """Retrieve all users ordered by their primary key.
 
         Returns:
-            List[User]: All user records from the database.
+            list[User]: All user records from the database.
         """
         return self.session.query(User).order_by(User.id).all()
 
-    def find_by_id(self, user_id: int):
+    def find_by_id(self, user_id: int) -> User | None:
         """Retrieve a single user by id.
 
         Args:
