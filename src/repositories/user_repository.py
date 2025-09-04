@@ -1,4 +1,5 @@
-    """
+  """
+  
 UserRepository encapsulates database operations for the User model.
 I use SQLAlchemy sessions to abstract queries, returning user objects without exposing
 SQL details to my tests. This class provides convenient methods to initialize
