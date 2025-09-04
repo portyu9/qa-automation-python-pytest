@@ -30,11 +30,11 @@ class UserRepository:
         Returns:
             A configured UserRepository instance with an active SQLAlchemy session.
     """    
-        engine = create_engine(db_url, echo=False, future=True)
+         engine = create_engine(db_url, echo=False, future=True) 
         init_db(engine)
         session = Session(bind=engine)
-        return cls(sesion))
-
+        return cls(session)
+    
     def find_all(self):
         """Retrieve all users ordered by their primary key.
 
