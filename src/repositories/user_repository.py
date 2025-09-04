@@ -30,7 +30,10 @@ class UserRepository:
         Returns:
             A configured UserRepository instance with an active SQLAlchemy session.
     """    
-         engine = create_engine(db_url, echo=False, future=True) 
+               engine = create_engine(db_url, echo=False, future=True)
+            init_db(engine)
+            session = Session(bind=engine)
+            return cls(session)
         init_db(engine)
         session = Session(bind=engine)
         return cls(session)
