@@ -8,6 +8,8 @@ by id.
 
 from sqlalchemy.orm import Session
 
+from sqlalchemy import create_engine
+
 from ..db import get_engine, init_db, User
 
 
@@ -27,11 +29,13 @@ class UserRepository:
         Returns:
             A configured UserRepository instance with an active SQLAlchemy session.
         """
-        engine = get_engine(db_url)
-        # ensure the database schema exists and seed sample data
+   # 
+                engine = create_engine(db_url, echo=False, future=True)
+
         init_db(engine)
-        session = Session(bind=engine)
-        return cls(session)
+        
+                        session = Session(bind=engine)
+                return cls(session)
 
     def find_all(self):
         """Retrieve all users ordered by their primary key.
