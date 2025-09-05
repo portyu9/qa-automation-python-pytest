@@ -1,19 +1,15 @@
 """
 Security test placeholder for running an OWASP ZAP scan.
 
-I include this module to demonstrate how to integrate security scanning into the
-framework.  The test is skipped if the ZAP Python API is not installed or a
-daemon is not running.  When enabled, it launches a quick scan against the
-local mock API and fails if any alerts are raised.
+I include this module to demonstrate how to integrate security scanning into our framework. The test is skipped if the ZAP Python API is not installed or a daemon is not running. When enabled, it launches a quick scan against the local mock API and fails if any alerts are raised.
 """
 
 import os
 import pytest
 import socket
 
-
+# Skip tests if ZAP Python API isn't installed
 pytest.importorskip("zapv2")
-
 
 @pytest.mark.security
 def test_owasp_zap_scan(run_mock_api) -> None:
@@ -21,22 +17,25 @@ def test_owasp_zap_scan(run_mock_api) -> None:
     Run a very basic OWASP ZAP scan against the mock API.
 
     To enable this test, install ``python-owasp-zap-v2.4`` and start the ZAP
-    daemon (e.g. ``zap.sh -daemon -port 8090``).  The test will connect to
+    daemon (e.g., ``zap.sh -daemon -port 8090``). The test will connect to
     the daemon, spider the target and assert that no alerts are raised.
-
+    """
     from zapv2 import ZAPv2  # type: ignore
+
     # Skip test if ZAP daemon is not running
     zap_host = "127.0.0.1"
     zap_port = 8090
     try:
-        # Attempt to open a connection to the ZAP daemon
         with socket.create_connection((zap_host, zap_port), timeout=2):
             pass
     except OSError:
         pytest.skip(f"ZAP daemon not running on {zap_host}:{zap_port}, skipping test")
 
     # Configure the ZAP API client; default port 8090 is used by the daemon
-    zap = ZAPv2(apikey=os.environ.get("ZAP_API_KEY"), proxies={"http": "http://127.0.0.1:8090", "https": "http://127.0.0.1:8090"})
+    zap = ZAPv2(
+        apikey=os.environ.get("ZAP_API_KEY"),
+        proxies={"http": "http://127.0.0.1:8090", "https": "http://127.0.0.1:8090"},
+    )
     target = os.environ.get("API_BASE_URL", "http://localhost:5000")
 
     # Access the target to register it with ZAP
@@ -52,6 +51,4 @@ def test_owasp_zap_scan(run_mock_api) -> None:
         pass
     # Retrieve alerts and assert none are critical
     alerts = zap.core.alerts(baseurl=target)
-    # Only continue if there are alerts; otherwise the test passes
     assert all(alert.get("risk").lower() in {"low", "informational"} for alert in alerts)
-    
