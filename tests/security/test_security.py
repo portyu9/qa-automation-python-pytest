@@ -23,18 +23,17 @@ def test_owasp_zap_scan(run_mock_api) -> None:
     To enable this test, install ``python-owasp-zap-v2.4`` and start the ZAP
     daemon (e.g. ``zap.sh -daemon -port 8090``).  The test will connect to
     the daemon, spider the target and assert that no alerts are raised.
-    """
+
     from zapv2 import ZAPv2  # type: ignore
-        # Skip test if ZAP daemon is not running
-        zap_host = "127.0.0.1"
-            zap_port = 8090
-        try:
-            # Attempt to open a connection to the ZAP daemon
-            with socket.create_connection((zap_host, zap_port), timeout=2):
+    # Skip test if ZAP daemon is not running
+    zap_host = "127.0.0.1"
+    zap_port = 8090
+    try:
+        # Attempt to open a connection to the ZAP daemon
+        with socket.create_connection((zap_host, zap_port), timeout=2):
             pass
     except OSError:
         pytest.skip(f"ZAP daemon not running on {zap_host}:{zap_port}, skipping test")
-
 
     # Configure the ZAP API client; default port 8090 is used by the daemon
     zap = ZAPv2(apikey=os.environ.get("ZAP_API_KEY"), proxies={"http": "http://127.0.0.1:8090", "https": "http://127.0.0.1:8090"})
