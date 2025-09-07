@@ -1,6 +1,6 @@
 # QA Automation Demo: Python with PyTest & Playwright
 
-This repository demonstrates a production-ready QA automation framework in Python. It combines PyTest for test execution with Playwright for browser automation, Requests for API interactions, SQLAlchemy for ORM, Locust for load testing, and OWASP ZAP for security scanning. The goal is to show how to layer tests across unit, API, database, performance, security, and UI and keep them maintainable.
+This repository demonstrates a production-ready QA automation framework in Python. It combines PyTest for test execution with Playwright for browser automation, Requests for API interactions, SQLAlchemy for ORM, Locust for load testing, and OWASP ZAP for security scanning. The goal is to show how to layer tests across unit, API, database, performance, security, and UI and keep them maintainable with GitHub Actions CI.
 
 ## Features
 
