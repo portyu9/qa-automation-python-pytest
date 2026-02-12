@@ -11,7 +11,8 @@ import os
 import pytest
 
 
-pytest.importorskip("locust")
+# Removed problematic locust import to avoid recursion error
+
 
 
 @pytest.mark.performance
