@@ -8,3 +8,5 @@ pytest-asyncio>=0.18.0
 pytest-mock>=3.7.0
 locust>=2.0.0
 python-owasp-zap-v2.4
+cryptography>=46.0.0
+pyOpenSSL>=25.0.0
