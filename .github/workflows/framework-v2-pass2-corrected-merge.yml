@@ -1,0 +1,106 @@
+name: Framework v2 corrected Pass 2 deterministic merge
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  merge:
+    if: github.head_ref == 'data-capture/nasdaq-smallcap-20260803'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download old successful Pass 2 rows
+        uses: actions/download-artifact@v4
+        with:
+          name: framework-v2-pass2-52week-a3e02b77c87ccb8e3c41faeeaa24b5b45c821b53
+          path: inputs/old
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: portyu9/qa-automation-python-pytest
+          run-id: 30910852697
+      - name: Download completed class-share bridge
+        uses: actions/download-artifact@v4
+        with:
+          name: framework-v2-pass2-class-share-faef41dbdd4e3743146dbc180e2fb197aebc1a7f
+          path: inputs/class
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: portyu9/qa-automation-python-pytest
+          run-id: 30912688525
+      - name: Download official full cutoff bridge
+        uses: actions/download-artifact@v4
+        with:
+          name: nasdaq-full-july31-a3e02b77c87ccb8e3c41faeeaa24b5b45c821b53
+          path: inputs/full
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: portyu9/qa-automation-python-pytest
+          run-id: 30910850267
+      - name: Download official current-band cutoff bridge
+        uses: actions/download-artifact@v4
+        with:
+          name: nasdaq-cutoff-price-bridge-973f372a099bf8cd8de9f2a119072fd1da69c596
+          path: inputs/narrow
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: portyu9/qa-automation-python-pytest
+          run-id: 30872601707
+      - name: Build corrected 1286-row Pass 2 artifact
+        shell: bash
+        run: |
+          python - <<'PY'
+          import datetime as dt, hashlib, json, pathlib, urllib.parse, urllib.request, zipfile
+          OUT=pathlib.Path('framework-v2-pass2-corrected-merge');OUT.mkdir(exist_ok=True)
+          EXPECTED_COUNT=1286;EXPECTED_SHA='1da404551660dc9e91c382d451712f0b44471adaf11d7b278072d5c3b2094b17';START='2025-08-01';END='2026-07-31'
+          H={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0 Safari/537.36','Accept':'application/json,text/plain,*/*'}
+          def jl(p):return [json.loads(x) for x in pathlib.Path(p).read_text().splitlines() if x.strip()]
+          frozen=json.loads(pathlib.Path('scan-inputs/frozen-population-20260731.json').read_text());symbols=sorted(set(frozen['symbols']));calc=hashlib.sha256(('\n'.join(symbols)+'\n').encode()).hexdigest()
+          if frozen.get('population_count')!=EXPECTED_COUNT or frozen.get('population_sha256')!=EXPECTED_SHA or len(symbols)!=EXPECTED_COUNT or calc!=EXPECTED_SHA:raise SystemExit('corrected frozen population validation failed')
+          old=jl('inputs/old/pass2-metrics.jsonl');old_success={x['symbol']:x for x in old if x.get('status')=='SUCCESS'};old_fail={x['symbol'] for x in old if x.get('status')!='SUCCESS'}
+          if len(old_success)!=1279 or old_fail!={'CRD/A','CRD/B','HVT/A','TOI'}:raise SystemExit(f'old artifact contract changed: success={len(old_success)} fail={old_fail}')
+          class_rows=jl('inputs/class/bridge-metrics.jsonl');class_map={x['symbol']:x for x in class_rows}
+          if set(class_map)!={'CRD/A','CRD/B','HVT/A'} or any(x.get('status')!='SUCCESS' for x in class_rows):raise SystemExit('class-share bridge contract failed')
+          official={}
+          for x in jl('inputs/full/cutoff.jsonl'):
+            if x['symbol'] in {'BXDC','IRS','OPI'}:official[x['symbol']]=x['jul31_close']
+          for x in jl('inputs/narrow/cutoff-price-bridge.jsonl'):
+            if x['symbol']=='TOI':official['TOI']=x['nasdaq_jul31_close']
+          if set(official)!={'BXDC','IRS','OPI','TOI'}:raise SystemExit(f'official cutoff evidence missing: {official}')
+          aliases={'BXDC':'BXDC','IRS':'IRS','OPI':'OPI','TOI':'TOI'}
+          def get(url):
+            with urllib.request.urlopen(urllib.request.Request(url,headers=H),timeout=60) as r:return r.read()
+          def yahoo(symbol):
+            p1=int(dt.datetime(2025,8,1,tzinfo=dt.timezone.utc).timestamp());p2=int(dt.datetime(2026,8,1,tzinfo=dt.timezone.utc).timestamp());q=urllib.parse.urlencode({'period1':p1,'period2':p2,'interval':'1d','events':'history','includeAdjustedClose':'true'});u=f'https://query1.finance.yahoo.com/v8/finance/chart/{aliases[symbol]}?{q}';raw=get(u);z=(((json.loads(raw).get('chart') or {}).get('result') or [None])[0])
+            if not z:raise RuntimeError(f'no history for {symbol}')
+            ts=z.get('timestamp') or [];qt=(((z.get('indicators') or {}).get('quote') or [{}])[0]);rows=[]
+            for i,t in enumerate(ts):
+              d=dt.datetime.fromtimestamp(t,dt.timezone.utc).date().isoformat();c=(qt.get('close') or [None]*len(ts))[i];hi=(qt.get('high') or [None]*len(ts))[i];lo=(qt.get('low') or [None]*len(ts))[i];v=(qt.get('volume') or [None]*len(ts))[i]
+              if START<=d<=END and c is not None:rows.append({'date':d,'close':float(c),'high':float(hi if hi is not None else c),'low':float(lo if lo is not None else c),'volume':v})
+            by={x['date']:x for x in rows}
+            if END not in by:raise RuntimeError(f'cutoff absent for {symbol}')
+            diff=abs(by[END]['close']/official[symbol]-1)*100
+            if diff>1.0:raise RuntimeError(f'{symbol} cutoff differs from official by {diff:.4f}%')
+            hi=max(x['high'] for x in rows);lo=min(x['low'] for x in rows);cut=by[END]['close'];dd=(1-cut/hi)*100;dal=(cut/lo-1)*100;qual=dd>=50 and dal<=10;near=(not qual and dd>=45 and dal<=15)
+            metric={'symbol':symbol,'status':'SUCCESS','source':'Yahoo chart history corroborated by certified official Nasdaq July 31 close','source_symbol_variant':aliases[symbol],'source_url':u,'raw_sha256':hashlib.sha256(raw).hexdigest(),'history_rows':len(rows),'first_history_date':rows[0]['date'],'last_history_date':rows[-1]['date'],'full_52week_coverage':rows[0]['date']<='2025-08-15' and len(rows)>=200,'cutoff_close':cut,'certified_official_cutoff_close':official[symbol],'cutoff_close_difference_pct':diff,'high_52week':hi,'low_52week':lo,'drawdown_from_high_pct':dd,'distance_above_low_pct':dal,'mechanical_qualified':qual,'near_qualified':near}
+            return metric,rows,raw
+          added={};hist={};raws={}
+          for s in ('BXDC','IRS','OPI','TOI'):
+            m,h,r=yahoo(s);added[s]=m;hist[s]=h;raws[s]=r
+          combined=dict(old_success);combined.update(class_map);combined.update(added)
+          if set(combined)!=set(symbols) or len(combined)!=EXPECTED_COUNT:raise SystemExit(f'combined set mismatch missing={sorted(set(symbols)-set(combined))} extra={sorted(set(combined)-set(symbols))}')
+          rows=[combined[s] for s in symbols];quals=[x for x in rows if x.get('mechanical_qualified')];near=[x for x in rows if x.get('near_qualified')];limited=[x for x in rows if not x.get('full_52week_coverage')]
+          def write(name,data):(OUT/name).write_text(''.join(json.dumps(x,sort_keys=True,separators=(',',':'))+'\n' for x in data))
+          write('pass2-metrics.jsonl',rows);write('mechanical-qualifiers.jsonl',quals);write('near-qualifiers.jsonl',near);write('limited-history.jsonl',limited);write('failures.jsonl',[])
+          with zipfile.ZipFile(OUT/'incremental-histories.zip','w',zipfile.ZIP_DEFLATED) as z:
+            for s,h in hist.items():z.writestr(s+'.json',json.dumps(h,sort_keys=True,separators=(',',':'))+'\n')
+          with zipfile.ZipFile(OUT/'incremental-raw-responses.zip','w',zipfile.ZIP_DEFLATED) as z:
+            for s,r in raws.items():z.writestr(s+'.json',r)
+          mb=(OUT/'pass2-metrics.jsonl').read_bytes();qb=(OUT/'mechanical-qualifiers.jsonl').read_bytes()
+          summary={'record_type':'Framework_v2_R38_pass2_corrected_deterministic_merge','scan_id':frozen.get('scan_id'),'revision_id':frozen.get('revision_id'),'cutoff':frozen.get('cutoff'),'captured_at_utc':dt.datetime.now(dt.timezone.utc).isoformat(),'population_count':EXPECTED_COUNT,'population_sha256':EXPECTED_SHA,'success_count':EXPECTED_COUNT,'failure_count':0,'reused_unchanged_success_rows':1279,'class_share_bridge_rows':3,'new_or_recovered_rows':4,'full_52week_coverage_count':EXPECTED_COUNT-len(limited),'limited_history_count':len(limited),'mechanical_qualifier_count':len(quals),'near_qualifier_count':len(near),'metrics_sha256':hashlib.sha256(mb).hexdigest(),'qualifiers_sha256':hashlib.sha256(qb).hexdigest(),'complete':True}
+          (OUT/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n');print(json.dumps(summary,indent=2,sort_keys=True));print('incremental',json.dumps([added[s] for s in sorted(added)],indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: framework-v2-pass2-corrected-merge-${{ github.event.pull_request.head.sha }}
+          path: framework-v2-pass2-corrected-merge/
+          retention-days: 7
