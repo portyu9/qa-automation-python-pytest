@@ -1,0 +1,120 @@
+name: SEC product classification audit v2
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  audit:
+    if: github.head_ref == 'data-capture/nasdaq-smallcap-20260803'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download validated Nasdaq capture
+        uses: actions/download-artifact@v4
+        with:
+          name: nasdaq-smallcap-official-4c1cd5bc3b8f9d9d6537ee92c8f1623074811102
+          path: official-capture
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: portyu9/qa-automation-python-pytest
+          run-id: 30871955749
+      - name: Build SEC SIC and filing controls
+        id: audit
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          python - <<'PY'
+          import concurrent.futures, hashlib, json, pathlib, threading, time, urllib.request
+          from datetime import datetime, timezone
+          OUT=pathlib.Path('sec-product-audit-v2'); RAW=OUT/'submissions'; RAW.mkdir(parents=True,exist_ok=True)
+          UA='FrameworkV2Audit/1.0 yunior-portal-research'
+          WWW_HEADERS={'User-Agent':UA,'Accept':'application/json,text/plain,*/*','Accept-Encoding':'identity','Referer':'https://www.sec.gov/'}
+          DATA_HEADERS={'User-Agent':UA,'Accept':'application/json,text/plain,*/*','Accept-Encoding':'identity','Referer':'https://www.sec.gov/'}
+          EXCLUSION_SICS={'6726':'INVESTMENT_OFFICES_CLOSED_END_OR_BDC','6770':'BLANK_CHECK_COMPANY'}
+          INVESTMENT_FORMS={'N-2','N-2/A','N-CSR','N-CSRS','N-CEN','N-54A','N-54C','N-PX','NPORT-P','NPORT-EX'}
+          def num(v):
+            if v is None:return None
+            t=str(v).replace(',','').replace('$','').replace('%','').strip()
+            if not t or t in {'--','N/A','NA','UNCH'}:return None
+            try:return float(t)
+            except ValueError:return None
+          def get(url,headers):
+            req=urllib.request.Request(url,headers=headers)
+            with urllib.request.urlopen(req,timeout=60) as response:return response.read()
+          all_files=list(pathlib.Path('official-capture').rglob('nasdaq-all-listed-official.json'))
+          exact_files=list(pathlib.Path('official-capture').rglob('nasdaq-smallcap-enriched.json'))
+          if len(all_files)!=1 or len(exact_files)!=1:raise SystemExit('official capture files not unique')
+          all_rows=(json.loads(all_files[0].read_bytes()).get('data') or {}).get('rows') or []
+          exact_rows=json.loads(exact_files[0].read_bytes())
+          exact={str(r.get('symbol') or '').strip().upper() for r in exact_rows}
+          broad={}
+          for r in all_rows:
+            s=str(r.get('symbol') or '').strip().upper(); cap=num(r.get('marketCap')); pct=num(r.get('pctchange'))
+            cut=cap/(1+pct/100) if cap is not None and pct is not None and 1+pct/100>0 else None
+            if s in exact or (cap is not None and 250_000_000<=cap<=2_500_000_000) or (cut is not None and 250_000_000<=cut<=2_500_000_000):
+              broad[s]={'symbol':s,'name':r.get('name'),'industry':r.get('industry'),'current_market_cap':cap,'derived_cutoff_market_cap':cut}
+          mapping_raw=get('https://www.sec.gov/files/company_tickers_exchange.json',WWW_HEADERS)
+          mapping=json.loads(mapping_raw); fields=mapping.get('fields') or []
+          tickers={str(dict(zip(fields,v)).get('ticker') or '').strip().upper():dict(zip(fields,v)) for v in mapping.get('data') or []}
+          def mapped(s):
+            for a in (s,s.replace('/','-'),s.replace('.','-'),s.replace('^','-')):
+              if a in tickers:return tickers[a]
+          candidates=[]
+          for s,r in sorted(broad.items()):
+            m=mapped(s); candidates.append({**r,'sec_mapping':m})
+          lock=threading.Lock(); last=[0.0]
+          def throttle():
+            with lock:
+              wait=.13-(time.monotonic()-last[0])
+              if wait>0:time.sleep(wait)
+              last[0]=time.monotonic()
+          def fetch(cik):
+            cik10=f'{int(cik):010d}'; url=f'https://data.sec.gov/submissions/CIK{cik10}.json'
+            for retry in range(4):
+              try:
+                throttle(); raw=get(url,DATA_HEADERS); payload=json.loads(raw); (RAW/f'CIK{cik10}.json').write_bytes(raw)
+                return int(cik),{'payload':payload,'sha256':hashlib.sha256(raw).hexdigest(),'url':url}
+              except Exception as exc:
+                if retry==3:return int(cik),{'error':f'{type(exc).__name__}: {exc}','url':url}
+                time.sleep(.5*(2**retry))
+          ciks=sorted({r['sec_mapping']['cik'] for r in candidates if r.get('sec_mapping')})
+          subs={}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+            for i,(cik,result) in enumerate(pool.map(fetch,ciks),1):
+              subs[cik]=result
+              if i%100==0:print(f'completed {i}/{len(ciks)}',flush=True)
+          controls=[]
+          for r in candidates:
+            m=r.get('sec_mapping'); sub=subs.get(m.get('cik')) if m else None; p=(sub or {}).get('payload') or {}
+            forms=set(str(x) for x in (((p.get('filings') or {}).get('recent') or {}).get('form') or []))
+            sic=str(p.get('sic') or '').strip(); inv=sorted(forms&INVESTMENT_FORMS); reason=EXCLUSION_SICS.get(sic)
+            if not reason and inv:reason='INVESTMENT_COMPANY_FORMS:'+','.join(inv)
+            controls.append({**r,'sec_cik':m.get('cik') if m else None,'sec_title':p.get('name') or (m.get('name') if m else None),'sec_entity_type':p.get('entityType'),'sec_sic':sic or None,'sec_sic_description':p.get('sicDescription'),'sec_investment_forms':inv,'sec_exclusion_reason':reason,'sec_submission_sha256':(sub or {}).get('sha256'),'sec_error':(sub or {}).get('error')})
+          summary={'record_type':'Framework_v2_R38_SEC_product_audit_v2','captured_at_utc':datetime.now(timezone.utc).isoformat(),'candidate_count':len(candidates),'mapped_count':sum(bool(r.get('sec_mapping')) for r in candidates),'unmapped_count':sum(not r.get('sec_mapping') for r in candidates),'unique_cik_count':len(ciks),'submission_success_count':sum('payload' in x for x in subs.values()),'submission_failure_count':sum('error' in x for x in subs.values()),'sec_exclusion_count':sum(bool(r.get('sec_exclusion_reason')) for r in controls),'mapping_sha256':hashlib.sha256(mapping_raw).hexdigest()}
+          (OUT/'controls.jsonl').write_text(''.join(json.dumps(r,sort_keys=True)+'\n' for r in controls))
+          (OUT/'exclusions.jsonl').write_text(''.join(json.dumps(r,sort_keys=True)+'\n' for r in controls if r.get('sec_exclusion_reason')))
+          (OUT/'unmapped.jsonl').write_text(''.join(json.dumps(r,sort_keys=True)+'\n' for r in controls if not r.get('sec_mapping')))
+          (OUT/'failures.jsonl').write_text(''.join(json.dumps(r,sort_keys=True)+'\n' for r in controls if r.get('sec_error')))
+          (OUT/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(summary,indent=2,sort_keys=True))
+          if summary['submission_failure_count']:raise SystemExit(2)
+          PY
+      - name: Upload SEC audit diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sec-product-audit-v2-${{ github.event.pull_request.head.sha }}
+          path: sec-product-audit-v2/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
+      - name: Enforce SEC audit success
+        if: steps.audit.outcome != 'success'
+        run: exit 1
