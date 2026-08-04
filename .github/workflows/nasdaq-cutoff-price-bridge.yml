@@ -1,0 +1,272 @@
+name: Nasdaq July 31 cutoff price bridge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  bridge:
+    if: github.head_ref == 'data-capture/nasdaq-smallcap-20260803'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout isolated branch
+        uses: actions/checkout@v4
+
+      - name: Download validated official exact-band capture
+        uses: actions/download-artifact@v4
+        with:
+          name: nasdaq-smallcap-official-4c1cd5bc3b8f9d9d6537ee92c8f1623074811102
+          path: official-capture
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: portyu9/qa-automation-python-pytest
+          run-id: 30871955749
+
+      - name: Fetch official Nasdaq July 31 and August 3 closes
+        id: bridge
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          python - <<'PY'
+          import concurrent.futures
+          import hashlib
+          import json
+          import pathlib
+          import random
+          import re
+          import time
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timezone
+
+          HEADERS = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0 Safari/537.36",
+              "Accept": "application/json, text/plain, */*",
+              "Accept-Language": "en-US,en;q=0.9",
+              "Origin": "https://www.nasdaq.com",
+              "Referer": "https://www.nasdaq.com/market-activity/stocks/screener",
+          }
+          OUT = pathlib.Path("nasdaq-cutoff-price-bridge")
+          RAW = OUT / "raw"
+          RAW.mkdir(parents=True, exist_ok=True)
+
+          candidates = list(pathlib.Path("official-capture").rglob("nasdaq-smallcap-enriched.json"))
+          if len(candidates) != 1:
+              raise SystemExit(f"Expected exactly one enriched snapshot, found {len(candidates)}")
+          snapshot_path = candidates[0]
+          snapshot_bytes = snapshot_path.read_bytes()
+          snapshot_rows = json.loads(snapshot_bytes)
+
+          def parse_number(value):
+              if value is None:
+                  return None
+              text = str(value).replace(",", "").replace("$", "").replace("%", "").strip()
+              if not text or text in {"--", "N/A", "NA"}:
+                  return None
+              try:
+                  return float(text)
+              except ValueError:
+                  return None
+
+          def classify(row):
+              name = str(row.get("name") or row.get("all_listed_name") or "")
+              industry = str(row.get("industry") or "")
+              security_type = str(row.get("listing_security_name") or name)
+              text = " | ".join([name, industry, security_type]).lower()
+              is_adr = bool(re.search(
+                  r"\b(american depositar(?:y|ies)|american depositor(?:y|ies)|depositary receipt|depository receipt|\badr\b|\badss?\b)",
+                  text,
+              ))
+              if re.search(r"\b(warrant|warrants)\b", text): return "PROHIBITED"
+              if re.search(r"\b(right|rights)\b", text) and not re.search(r"human rights|rights management", text): return "PROHIBITED"
+              if re.search(r"\b(senior notes?|subordinated notes?|junior subordinated notes?|fixed[- ]rate notes?|reset[- ]rate notes?|notes? due|debentures?|bonds?)\b", text): return "PROHIBITED"
+              if re.search(r"\btangible equity units?\b", text): return "PROHIBITED"
+              if re.search(r"\b(unit|units)\b", text) and re.search(r"(each unit|unit consists|units, each|acquisition.*unit|blank check)", text): return "PROHIBITED"
+              if re.search(r"\bpreferred (stock|share|shares|class)\b", text) or re.search(r"depositary shares.*preferred|depository shares.*preferred|trust preferred securities", text): return "PROHIBITED"
+              if not is_adr and re.search(r"\b(depositary|depository) shares?\b", text): return "PROHIBITED"
+              if re.search(r"\b(blank check|shell company)\b", text): return "PROHIBITED"
+              if re.search(r"\bbusiness development compan", text): return "PROHIBITED"
+              if re.search(r"\b(l\.p\.|\blp\b|limited partnership|master limited partnership)\b", text) and re.search(r"\b(common units?|limited partner interests?|partnership)\b", text): return "PROHIBITED"
+              if re.search(r"\bclosed[- ]end fund\b", text): return "PROHIBITED"
+              if re.search(r"\b(fund|shares? of beneficial interest|cmn shs of bi|capital trust)\b", text) and not re.search(r"real estate investment trust", text): return "PROHIBITED"
+              if re.search(r"\binvestment company\b", text) and not re.search(r"investment company act compliance|software", text): return "PROHIBITED"
+              if re.search(r"\btrust\b", text) and re.search(r"finance|investment|municipal|income|credit|healthcare|health sciences|life sciences|beneficial", text) and not re.search(r"real estate investment trust", text): return "PROHIBITED"
+              if is_adr: return "COMMON"
+              if re.search(r"\bsubordinate voting shares?\b", text): return "COMMON"
+              if re.search(r"\bordinary shares?\b", text): return "COMMON"
+              if re.search(r"\bcommon(?: stock| shares?)?\b", text): return "COMMON"
+              if re.search(r"\bclass [abc](?: common)? shares?\b", text): return "COMMON"
+              if re.search(r"\breal estate investment trust\b", text): return "COMMON"
+              if re.search(r"\bwhen issued\b", text): return "REVIEW"
+              if re.search(r"\b(llc|limited liability company)\b", text): return "REVIEW"
+              if re.search(r"\b(inc\.?|incorporated|corporation|corp\.?|ltd\.?|limited|plc|s\.a\.?|bancorp|holdings?|pharmaceuticals?|resources?|energy|financial|commerce)\b", text): return "COMMON"
+              return "REVIEW"
+
+          common_rows = []
+          class_counts = {"COMMON": 0, "PROHIBITED": 0, "REVIEW": 0}
+          for row in snapshot_rows:
+              c = classify(row)
+              class_counts[c] += 1
+              if c == "COMMON":
+                  common_rows.append(row)
+          if class_counts != {"COMMON": 1296, "PROHIBITED": 222, "REVIEW": 0}:
+              raise SystemExit(f"Classifier drift: {class_counts}")
+
+          def normalize_date(value):
+              if value is None:
+                  return None
+              text = str(value).strip()
+              if not text:
+                  return None
+              for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%b %d, %Y", "%B %d, %Y", "%m/%d/%Y %H:%M", "%Y-%m-%dT%H:%M:%S"):
+                  try:
+                      return datetime.strptime(text[:19] if "T" in fmt else text, fmt).date().isoformat()
+                  except ValueError:
+                      pass
+              m = re.search(r"(20\d{2})[-/](\d{1,2})[-/](\d{1,2})", text)
+              if m:
+                  return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+              return text
+
+          def extract_points(payload):
+              data = payload.get("data") or {}
+              chart = data.get("chart") or []
+              points = {}
+              for item in chart if isinstance(chart, list) else []:
+                  z = item.get("z") if isinstance(item, dict) and isinstance(item.get("z"), dict) else item
+                  if not isinstance(z, dict):
+                      continue
+                  date = normalize_date(z.get("dateTime") or z.get("date") or z.get("x"))
+                  close = parse_number(z.get("close") or z.get("closePrice") or z.get("y"))
+                  if date and close is not None:
+                      points[date] = close
+              return points
+
+          def fetch_symbol(row):
+              symbol = str(row.get("symbol") or "").strip().upper()
+              encoded = urllib.parse.quote(symbol, safe="")
+              variants = [
+                  {"assetclass": "stocks", "fromdate": "2026-07-31", "todate": "2026-08-03"},
+                  {"assetclass": "stocks", "fromdate": "07/31/2026", "todate": "08/03/2026"},
+              ]
+              attempts = []
+              for retry in range(4):
+                  for params in variants:
+                      url = f"https://api.nasdaq.com/api/quote/{encoded}/chart?" + urllib.parse.urlencode(params)
+                      try:
+                          req = urllib.request.Request(url, headers=HEADERS)
+                          with urllib.request.urlopen(req, timeout=45) as response:
+                              raw = response.read()
+                              status = response.status
+                          payload = json.loads(raw)
+                          points = extract_points(payload)
+                          digest = hashlib.sha256(raw).hexdigest()
+                          target = RAW / f"{re.sub(r'[^A-Z0-9._-]', '_', symbol)}.json"
+                          target.write_bytes(raw)
+                          if "2026-07-31" in points and "2026-08-03" in points:
+                              current_close = parse_number(row.get("lastsale_numeric") or row.get("lastsale"))
+                              current_cap = parse_number(row.get("marketCap_numeric") or row.get("marketCap"))
+                              jul31 = points["2026-07-31"]
+                              aug3 = points["2026-08-03"]
+                              implied_shares = current_cap / current_close if current_cap and current_close else None
+                              cutoff_cap = implied_shares * jul31 if implied_shares else None
+                              close_delta_pct = ((current_close / aug3) - 1) * 100 if current_close and aug3 else None
+                              return {
+                                  "symbol": symbol,
+                                  "exchange": row.get("exchange"),
+                                  "security_name": row.get("listing_security_name") or row.get("name"),
+                                  "current_market_cap_usd": current_cap,
+                                  "current_lastsale": current_close,
+                                  "nasdaq_aug3_close": aug3,
+                                  "nasdaq_jul31_close": jul31,
+                                  "current_close_vs_aug3_pct": close_delta_pct,
+                                  "implied_current_shares": implied_shares,
+                                  "price_bridged_cutoff_market_cap_usd": cutoff_cap,
+                                  "historical_raw_sha256": digest,
+                                  "historical_url": url,
+                                  "status": "SUCCESS",
+                              }
+                          attempts.append({"url": url, "status": status, "points": sorted(points)})
+                      except Exception as exc:
+                          attempts.append({"url": url, "error": f"{type(exc).__name__}: {exc}"})
+                  time.sleep((2 ** retry) * 0.35 + random.random() * 0.20)
+              return {
+                  "symbol": symbol,
+                  "exchange": row.get("exchange"),
+                  "security_name": row.get("listing_security_name") or row.get("name"),
+                  "current_market_cap_usd": parse_number(row.get("marketCap_numeric") or row.get("marketCap")),
+                  "current_lastsale": parse_number(row.get("lastsale_numeric") or row.get("lastsale")),
+                  "status": "FAILED",
+                  "attempts": attempts,
+              }
+
+          results = []
+          with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+              futures = {executor.submit(fetch_symbol, row): row.get("symbol") for row in common_rows}
+              for count, future in enumerate(concurrent.futures.as_completed(futures), 1):
+                  result = future.result()
+                  results.append(result)
+                  if count % 100 == 0:
+                      print(f"completed {count}/{len(common_rows)}", flush=True)
+
+          results.sort(key=lambda row: row["symbol"])
+          successes = [row for row in results if row.get("status") == "SUCCESS"]
+          failures = [row for row in results if row.get("status") != "SUCCESS"]
+          close_mismatches = [
+              row for row in successes
+              if row.get("current_close_vs_aug3_pct") is None or abs(row["current_close_vs_aug3_pct"]) > 0.75
+          ]
+          in_band = [
+              row for row in successes
+              if row.get("price_bridged_cutoff_market_cap_usd") is not None
+              and 300_000_000 <= row["price_bridged_cutoff_market_cap_usd"] <= 2_000_000_000
+          ]
+          below_band = [row for row in successes if row.get("price_bridged_cutoff_market_cap_usd") is not None and row["price_bridged_cutoff_market_cap_usd"] < 300_000_000]
+          above_band = [row for row in successes if row.get("price_bridged_cutoff_market_cap_usd") is not None and row["price_bridged_cutoff_market_cap_usd"] > 2_000_000_000]
+
+          captured_at = datetime.now(timezone.utc).isoformat()
+          (OUT / "cutoff-price-bridge.jsonl").write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in results), encoding="utf-8")
+          (OUT / "failures.jsonl").write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in failures), encoding="utf-8")
+          (OUT / "close-mismatches.jsonl").write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in close_mismatches), encoding="utf-8")
+          summary = {
+              "record_type": "Framework_v2_R38_Nasdaq_cutoff_price_bridge",
+              "captured_at_utc": captured_at,
+              "source": "Nasdaq official chart API",
+              "source_snapshot_sha256": hashlib.sha256(snapshot_bytes).hexdigest(),
+              "classification_counts": class_counts,
+              "candidate_count": len(common_rows),
+              "success_count": len(successes),
+              "failure_count": len(failures),
+              "current_close_mismatch_count_over_0_75pct": len(close_mismatches),
+              "price_bridged_in_band_count": len(in_band),
+              "price_bridged_below_band_count": len(below_band),
+              "price_bridged_above_band_count": len(above_band),
+              "raw_response_file_count": len(list(RAW.glob("*.json"))),
+              "complete_price_bridge": len(failures) == 0 and len(close_mismatches) == 0,
+          }
+          (OUT / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          if failures or close_mismatches:
+              raise SystemExit(2)
+          PY
+
+      - name: Upload cutoff bridge diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nasdaq-cutoff-price-bridge-${{ github.event.pull_request.head.sha }}
+          path: nasdaq-cutoff-price-bridge/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
+
+      - name: Enforce bridge success
+        if: steps.bridge.outcome != 'success'
+        run: exit 1
