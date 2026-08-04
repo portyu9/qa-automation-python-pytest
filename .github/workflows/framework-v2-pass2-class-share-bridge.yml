@@ -1,0 +1,199 @@
+name: Framework v2 Pass 2 class-share bridge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - .github/workflows/framework-v2-pass2-class-share-bridge.yml
+
+permissions:
+  contents: read
+
+jobs:
+  bridge:
+    if: github.head_ref == 'data-capture/nasdaq-smallcap-20260803'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve three NYSE class-share histories
+        id: bridge
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          python - <<'PY'
+          import csv
+          import datetime as dt
+          import hashlib
+          import io
+          import json
+          import pathlib
+          import time
+          import urllib.parse
+          import urllib.request
+
+          OUT = pathlib.Path('framework-v2-pass2-class-share-bridge')
+          OUT.mkdir(parents=True, exist_ok=True)
+          SYMBOLS = {
+              'CRD/A': {'yahoo': 'CRD-A', 'stooq': 'crd-a.us'},
+              'CRD/B': {'yahoo': 'CRD-B', 'stooq': 'crd-b.us'},
+              'HVT/A': {'yahoo': 'HVT-A', 'stooq': 'hvt-a.us'},
+          }
+          START = dt.datetime(2025, 8, 1, tzinfo=dt.timezone.utc)
+          END_EXCLUSIVE = dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc)
+          CUTOFF = '2026-07-31'
+          HEADERS = {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0 Safari/537.36',
+              'Accept': 'application/json,text/csv,text/plain,*/*',
+          }
+
+          def get(url):
+              request = urllib.request.Request(url, headers=HEADERS)
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  raw = response.read()
+                  status = response.status
+              if status != 200:
+                  raise RuntimeError(f'HTTP {status}: {url}')
+              return raw
+
+          def yahoo_history(ticker):
+              query = urllib.parse.urlencode({
+                  'period1': int(START.timestamp()),
+                  'period2': int(END_EXCLUSIVE.timestamp()),
+                  'interval': '1d',
+                  'events': 'history',
+                  'includeAdjustedClose': 'true',
+              })
+              url = f'https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(ticker, safe="")}?{query}'
+              raw = get(url)
+              payload = json.loads(raw)
+              result = (((payload.get('chart') or {}).get('result') or [None])[0])
+              if not result:
+                  raise RuntimeError(f'No Yahoo result for {ticker}')
+              timestamps = result.get('timestamp') or []
+              quote = (((result.get('indicators') or {}).get('quote') or [{}])[0])
+              rows = []
+              for index, timestamp in enumerate(timestamps):
+                  date = dt.datetime.fromtimestamp(timestamp, tz=dt.timezone.utc).date().isoformat()
+                  close = (quote.get('close') or [None] * len(timestamps))[index]
+                  high = (quote.get('high') or [None] * len(timestamps))[index]
+                  low = (quote.get('low') or [None] * len(timestamps))[index]
+                  volume = (quote.get('volume') or [None] * len(timestamps))[index]
+                  if close is not None:
+                      rows.append({'date': date, 'close': float(close), 'high': float(high if high is not None else close), 'low': float(low if low is not None else close), 'volume': volume})
+              return url, raw, rows
+
+          def stooq_history(ticker):
+              url = f'https://stooq.com/q/d/l/?s={urllib.parse.quote(ticker)}&d1=20250801&d2=20260731&i=d'
+              raw = get(url)
+              text = raw.decode('utf-8-sig', errors='replace')
+              rows = []
+              for row in csv.DictReader(io.StringIO(text)):
+                  try:
+                      rows.append({
+                          'date': row['Date'],
+                          'close': float(row['Close']),
+                          'high': float(row['High']),
+                          'low': float(row['Low']),
+                          'volume': float(row['Volume']) if row.get('Volume') else None,
+                      })
+                  except (KeyError, TypeError, ValueError):
+                      continue
+              return url, raw, rows
+
+          results = []
+          histories = {}
+          raw_files = {}
+          failures = []
+          for symbol, aliases in SYMBOLS.items():
+              try:
+                  yahoo_url, yahoo_raw, yahoo_rows = yahoo_history(aliases['yahoo'])
+                  stooq_url, stooq_raw, stooq_rows = stooq_history(aliases['stooq'])
+                  yahoo_by_date = {row['date']: row for row in yahoo_rows}
+                  stooq_by_date = {row['date']: row for row in stooq_rows}
+                  if CUTOFF not in yahoo_by_date or CUTOFF not in stooq_by_date:
+                      raise RuntimeError(f'Missing cutoff close: Yahoo={CUTOFF in yahoo_by_date} Stooq={CUTOFF in stooq_by_date}')
+                  yahoo_cutoff = yahoo_by_date[CUTOFF]['close']
+                  stooq_cutoff = stooq_by_date[CUTOFF]['close']
+                  cutoff_difference_pct = abs(yahoo_cutoff / stooq_cutoff - 1) * 100
+                  if cutoff_difference_pct > 1.0:
+                      raise RuntimeError(f'Cutoff sources disagree by {cutoff_difference_pct:.4f}%')
+                  if len(yahoo_rows) < 150 or len(stooq_rows) < 150:
+                      raise RuntimeError(f'Insufficient history Yahoo={len(yahoo_rows)} Stooq={len(stooq_rows)}')
+                  high_52w = max(row['high'] for row in yahoo_rows)
+                  low_52w = min(row['low'] for row in yahoo_rows)
+                  cutoff_close = yahoo_cutoff
+                  drawdown_pct = (1 - cutoff_close / high_52w) * 100
+                  distance_above_low_pct = (cutoff_close / low_52w - 1) * 100
+                  mechanical_qualified = drawdown_pct >= 50 and distance_above_low_pct <= 10
+                  near_qualified = not mechanical_qualified and drawdown_pct >= 45 and distance_above_low_pct <= 15
+                  result = {
+                      'symbol': symbol,
+                      'status': 'SUCCESS',
+                      'source_symbol_variant': aliases['yahoo'],
+                      'source_url': yahoo_url,
+                      'corroborating_source_url': stooq_url,
+                      'raw_sha256': hashlib.sha256(yahoo_raw).hexdigest(),
+                      'corroborating_raw_sha256': hashlib.sha256(stooq_raw).hexdigest(),
+                      'history_rows': len(yahoo_rows),
+                      'corroborating_history_rows': len(stooq_rows),
+                      'first_history_date': yahoo_rows[0]['date'],
+                      'last_history_date': yahoo_rows[-1]['date'],
+                      'full_52week_coverage': yahoo_rows[0]['date'] <= '2025-08-15' and len(yahoo_rows) >= 200,
+                      'cutoff_close': cutoff_close,
+                      'corroborating_cutoff_close': stooq_cutoff,
+                      'cutoff_close_difference_pct': cutoff_difference_pct,
+                      'high_52week': high_52w,
+                      'low_52week': low_52w,
+                      'drawdown_from_high_pct': drawdown_pct,
+                      'distance_above_low_pct': distance_above_low_pct,
+                      'mechanical_qualified': mechanical_qualified,
+                      'near_qualified': near_qualified,
+                  }
+                  results.append(result)
+                  histories[symbol] = yahoo_rows
+                  raw_files[f'{symbol.replace("/", "_")}-yahoo.json'] = yahoo_raw
+                  raw_files[f'{symbol.replace("/", "_")}-stooq.csv'] = stooq_raw
+              except Exception as exc:
+                  failures.append({'symbol': symbol, 'status': 'FAILED', 'error': f'{type(exc).__name__}: {exc}'})
+
+          results.sort(key=lambda row: row['symbol'])
+          (OUT / 'bridge-metrics.jsonl').write_text(''.join(json.dumps(row, sort_keys=True) + '\n' for row in results))
+          (OUT / 'failures.jsonl').write_text(''.join(json.dumps(row, sort_keys=True) + '\n' for row in failures))
+          (OUT / 'normalized-histories.json').write_text(json.dumps(histories, sort_keys=True, separators=(',', ':')) + '\n')
+          import zipfile
+          with zipfile.ZipFile(OUT / 'raw-sources.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+              for name, raw in sorted(raw_files.items()):
+                  archive.writestr(name, raw)
+          summary = {
+              'record_type': 'Framework_v2_R38_pass2_class_share_bridge',
+              'captured_at_utc': dt.datetime.now(dt.timezone.utc).isoformat(),
+              'requested_count': len(SYMBOLS),
+              'success_count': len(results),
+              'failure_count': len(failures),
+              'mechanical_qualifier_count': sum(bool(row.get('mechanical_qualified')) for row in results),
+              'near_qualifier_count': sum(bool(row.get('near_qualified')) for row in results),
+              'complete': not failures and len(results) == len(SYMBOLS),
+          }
+          (OUT / 'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          if failures:
+              raise SystemExit(2)
+          PY
+
+      - name: Upload class-share bridge
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: framework-v2-pass2-class-share-${{ github.event.pull_request.head.sha }}
+          path: framework-v2-pass2-class-share-bridge/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
+
+      - name: Enforce class-share bridge success
+        if: steps.bridge.outcome != 'success'
+        run: exit 1
