@@ -1,0 +1,127 @@
+name: Framework v2 Pass 2 corrected 52-week screen
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  pass2:
+    if: github.head_ref == 'data-capture/nasdaq-smallcap-20260803'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Capture histories and apply corrected mechanical screen
+        id: screen
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          python - <<'PY'
+          import concurrent.futures as cf, datetime as dt, hashlib, json, pathlib, random, re, time, urllib.parse, urllib.request, zipfile
+          INPUT=pathlib.Path('scan-inputs/frozen-population-20260731.json'); OUT=pathlib.Path('framework-v2-pass2-corrected'); OUT.mkdir(exist_ok=True)
+          EXPECTED_COUNT=1286; EXPECTED_SHA='1da404551660dc9e91c382d451712f0b44471adaf11d7b278072d5c3b2094b17'; START='2025-08-01'; END='2026-07-31'
+          SPECIAL={'CRD/A':('CRD-A',10.91),'CRD/B':('CRD-B',10.07),'HVT/A':('HVT-A',30.20)}
+          H={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0 Safari/537.36','Accept':'application/json,text/plain,*/*','Accept-Language':'en-US,en;q=0.9','Origin':'https://www.nasdaq.com','Referer':'https://www.nasdaq.com/market-activity/stocks/screener'}
+          source=json.loads(INPUT.read_text()); symbols=[str(x).strip().upper() for x in source.get('symbols') or []]; unique=sorted(set(symbols)); calc=hashlib.sha256(('\n'.join(unique)+'\n').encode()).hexdigest()
+          validation={'declared_count':source.get('population_count'),'declared_sha':source.get('population_sha256'),'raw_count':len(symbols),'unique_count':len(unique),'recomputed_sha':calc}
+          (OUT/'input-validation.json').write_text(json.dumps(validation,indent=2,sort_keys=True)+'\n')
+          if source.get('population_count')!=EXPECTED_COUNT or source.get('population_sha256')!=EXPECTED_SHA or len(symbols)!=EXPECTED_COUNT or len(unique)!=EXPECTED_COUNT or calc!=EXPECTED_SHA: raise SystemExit(f'corrected population validation failed: {validation}')
+          def num(v):
+            if v is None:return None
+            try:return float(str(v).replace(',','').replace('$','').replace('%','').strip())
+            except:return None
+          def datekey(v):
+            s=str(v or '').strip()
+            for f in ('%Y-%m-%d','%m/%d/%Y','%b %d, %Y','%B %d, %Y','%Y-%m-%dT%H:%M:%S'):
+              try:return dt.datetime.strptime(s[:19] if 'T' in f else s,f).date().isoformat()
+              except:pass
+            m=re.search(r'(20\d{2})[-/](\d{1,2})[-/](\d{1,2})',s)
+            return f'{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}' if m else None
+          def extract(payload):
+            data=payload.get('data') or {}; p={}
+            for row in ((data.get('tradesTable') or {}).get('rows') or []):
+              if isinstance(row,dict):
+                d=datekey(row.get('date') or row.get('dateTime')); c=num(row.get('close') or row.get('closePrice')); hi=num(row.get('high') or row.get('highPrice')); lo=num(row.get('low') or row.get('lowPrice')); vol=num(row.get('volume'))
+                if d and c is not None:p[d]={'date':d,'close':c,'high':hi if hi is not None else c,'low':lo if lo is not None else c,'volume':vol}
+            for row in data.get('chart') or []:
+              z=row.get('z') if isinstance(row,dict) and isinstance(row.get('z'),dict) else row
+              if isinstance(z,dict):
+                d=datekey(z.get('dateTime') or z.get('date') or z.get('x')); c=num(z.get('close') or z.get('closePrice') or z.get('y')); hi=num(z.get('high') or z.get('highPrice')); lo=num(z.get('low') or z.get('lowPrice')); vol=num(z.get('volume'))
+                if d and c is not None:
+                  old=p.get(d,{}); p[d]={'date':d,'close':c,'high':hi if hi is not None else old.get('high',c),'low':lo if lo is not None else old.get('low',c),'volume':vol if vol is not None else old.get('volume')}
+            return [p[k] for k in sorted(p) if START<=k<=END]
+          def variants(s):
+            a=[s,s.replace('/','-'),s.replace('/','.'),s.replace('/','^'),s.replace('.','-'),s.replace('^','-')]; out=[]
+            for x in a:
+              if x and x not in out:out.append(x)
+            return out
+          def get(url):
+            with urllib.request.urlopen(urllib.request.Request(url,headers=H),timeout=60) as r:return r.read()
+          def yahoo(s,ticker,official):
+            p1=int(dt.datetime(2025,8,1,tzinfo=dt.timezone.utc).timestamp());p2=int(dt.datetime(2026,8,1,tzinfo=dt.timezone.utc).timestamp())
+            q=urllib.parse.urlencode({'period1':p1,'period2':p2,'interval':'1d','events':'history','includeAdjustedClose':'true'});u=f'https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(ticker,safe="")}?{q}';b=get(u);z=(((json.loads(b).get('chart') or {}).get('result') or [None])[0])
+            if not z:raise RuntimeError('no Yahoo result')
+            ts=z.get('timestamp') or []; qt=(((z.get('indicators') or {}).get('quote') or [{}])[0]); h=[]
+            for i,t in enumerate(ts):
+              d=dt.datetime.fromtimestamp(t,dt.timezone.utc).date().isoformat(); c=(qt.get('close') or [None]*len(ts))[i]; hi=(qt.get('high') or [None]*len(ts))[i];lo=(qt.get('low') or [None]*len(ts))[i];v=(qt.get('volume') or [None]*len(ts))[i]
+              if START<=d<=END and c is not None:h.append({'date':d,'close':float(c),'high':float(hi if hi is not None else c),'low':float(lo if lo is not None else c),'volume':v})
+            by={x['date']:x for x in h}
+            if END not in by or abs(by[END]['close']/official-1)*100>1:raise RuntimeError('class-share cutoff corroboration failed')
+            return h,b,u,ticker,'Yahoo corroborated by certified official cutoff close'
+          def fetch(s):
+            attempts=[]; best=[]; bestb=None; bestu=None; bestv=None
+            for retry in range(4):
+              for v in variants(s):
+                e=urllib.parse.quote(v,safe='')
+                for a,b in ((START,END),('08/01/2025','07/31/2026')):
+                  q=urllib.parse.urlencode({'assetclass':'stocks','fromdate':a,'todate':b,'limit':5000})
+                  for u in (f'https://api.nasdaq.com/api/quote/{e}/historical?{q}',f'https://api.nasdaq.com/api/quote/{e}/chart?'+urllib.parse.urlencode({'assetclass':'stocks','fromdate':a,'todate':b})):
+                    try:
+                      raw=get(u); h=extract(json.loads(raw)); attempts.append({'url':u,'rows':len(h),'cutoff':any(x['date']==END for x in h)})
+                      if len(h)>len(best):best,bestb,bestu,bestv=h,raw,u,v
+                      if any(x['date']==END for x in h) and len(h)>=5:break
+                    except Exception as exc:attempts.append({'url':u,'error':f'{type(exc).__name__}: {exc}'})
+                  if best and any(x['date']==END for x in best) and len(best)>=5:break
+                if best and any(x['date']==END for x in best) and len(best)>=5:break
+              if best and any(x['date']==END for x in best) and len(best)>=5:break
+              time.sleep((2**retry)*.35+random.random()*.2)
+            source_name='Nasdaq official historical/chart API'
+            if (not best or not any(x['date']==END for x in best)) and s in SPECIAL:
+              try:best,bestb,bestu,bestv,source_name=yahoo(s,*SPECIAL[s])
+              except Exception as exc:attempts.append({'special_fallback_error':f'{type(exc).__name__}: {exc}'})
+            if not best or not any(x['date']==END for x in best):return {'symbol':s,'status':'FAILED','reason':'NO_CUTOFF_HISTORY','attempts':attempts},bestb,best
+            by={x['date']:x for x in best}; cut=by[END]['close']; highs=[x['high'] for x in best if x.get('high') is not None];lows=[x['low'] for x in best if x.get('low') is not None]
+            if cut<=0 or not highs or not lows:return {'symbol':s,'status':'FAILED','reason':'INVALID_SERIES'},bestb,best
+            hi=max(highs);lo=min(lows);dd=(1-cut/hi)*100;dal=(cut/lo-1)*100;full=best[0]['date']<='2025-08-15' and len(best)>=200;qual=dd>=50 and dal<=10;near=(not qual and dd>=45 and dal<=15)
+            return {'symbol':s,'status':'SUCCESS','source':source_name,'source_symbol_variant':bestv,'source_url':bestu,'raw_sha256':hashlib.sha256(bestb).hexdigest() if bestb else None,'history_rows':len(best),'first_history_date':best[0]['date'],'last_history_date':best[-1]['date'],'full_52week_coverage':full,'cutoff_close':cut,'high_52week':hi,'low_52week':lo,'drawdown_from_high_pct':dd,'distance_above_low_pct':dal,'mechanical_qualified':qual,'near_qualified':near},bestb,best
+          results=[]; raws={}; histories={}
+          with cf.ThreadPoolExecutor(max_workers=10) as pool:
+            fs={pool.submit(fetch,s):s for s in unique}
+            for i,f in enumerate(cf.as_completed(fs),1):
+              r,b,h=f.result();results.append(r)
+              if b:raws[r['symbol']]=b
+              if h:histories[r['symbol']]=h
+              if i%100==0:print(f'completed {i}/{EXPECTED_COUNT}',flush=True)
+          results.sort(key=lambda x:x['symbol']); failures=[x for x in results if x['status']!='SUCCESS'];success=[x for x in results if x['status']=='SUCCESS'];quals=[x for x in success if x['mechanical_qualified']];near=[x for x in success if x['near_qualified']];limited=[x for x in success if not x['full_52week_coverage']]
+          def write(name,rows):(OUT/name).write_text(''.join(json.dumps(x,sort_keys=True,separators=(',',':'))+'\n' for x in rows))
+          write('pass2-metrics.jsonl',results);write('mechanical-qualifiers.jsonl',quals);write('near-qualifiers.jsonl',near);write('limited-history.jsonl',limited);write('failures.jsonl',failures)
+          with zipfile.ZipFile(OUT/'raw-responses.zip','w',zipfile.ZIP_DEFLATED) as z:
+            for s,b in sorted(raws.items()):z.writestr(re.sub(r'[^A-Z0-9._-]','_',s)+'.json',b)
+          with zipfile.ZipFile(OUT/'normalized-histories.zip','w',zipfile.ZIP_DEFLATED) as z:
+            for s,h in sorted(histories.items()):z.writestr(re.sub(r'[^A-Z0-9._-]','_',s)+'.json',json.dumps(h,sort_keys=True,separators=(',',':'))+'\n')
+          mb=(OUT/'pass2-metrics.jsonl').read_bytes();qb=(OUT/'mechanical-qualifiers.jsonl').read_bytes()
+          summary={'record_type':'Framework_v2_R38_pass2_corrected','scan_id':source.get('scan_id'),'revision_id':source.get('revision_id'),'cutoff':source.get('cutoff'),'captured_at_utc':dt.datetime.now(dt.timezone.utc).isoformat(),'population_count':EXPECTED_COUNT,'population_sha256':EXPECTED_SHA,'success_count':len(success),'failure_count':len(failures),'full_52week_coverage_count':len(success)-len(limited),'limited_history_count':len(limited),'mechanical_qualifier_count':len(quals),'near_qualifier_count':len(near),'raw_response_count':len(raws),'metrics_sha256':hashlib.sha256(mb).hexdigest(),'qualifiers_sha256':hashlib.sha256(qb).hexdigest(),'complete':len(success)==EXPECTED_COUNT and not failures}
+          (OUT/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n');print(json.dumps(summary,indent=2,sort_keys=True))
+          if failures:raise SystemExit(2)
+          PY
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: framework-v2-pass2-corrected-${{ github.event.pull_request.head.sha }}
+          path: framework-v2-pass2-corrected/
+          if-no-files-found: error
+          retention-days: 7
+      - if: steps.screen.outcome != 'success'
+        run: exit 1
