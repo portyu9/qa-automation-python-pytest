@@ -1,0 +1,329 @@
+name: Framework v2 Pass 2 52-week screen
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - .github/workflows/framework-v2-pass2-52week-screen.yml
+      - scan-inputs/frozen-population-20260731.json
+
+permissions:
+  contents: read
+
+jobs:
+  pass2:
+    if: github.head_ref == 'data-capture/nasdaq-smallcap-20260803'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Capture official histories and apply mechanical screen
+        id: screen
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          python - <<'PY'
+          import concurrent.futures
+          import hashlib
+          import json
+          import pathlib
+          import random
+          import re
+          import time
+          import urllib.parse
+          import urllib.request
+          import zipfile
+          from datetime import datetime, timezone
+
+          INPUT = pathlib.Path('scan-inputs/frozen-population-20260731.json')
+          OUT = pathlib.Path('framework-v2-pass2-52week-screen')
+          OUT.mkdir(parents=True, exist_ok=True)
+          EXPECTED_COUNT = 1283
+          EXPECTED_POPULATION_SHA = '664a08efd5a45337525611b550a1baef3c1d904d3183778f5b556dc28893ac27'
+          EXPECTED_SYMBOL_SET_SHA = '21e52c8c7e4937d3e741403d68be02feb1e5cfab59e5d71e6bbef81c3f58f9fe'
+          FROM_DATE = '2025-08-01'
+          TO_DATE = '2026-07-31'
+          HEADERS = {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0 Safari/537.36',
+              'Accept': 'application/json, text/plain, */*',
+              'Accept-Language': 'en-US,en;q=0.9',
+              'Origin': 'https://www.nasdaq.com',
+              'Referer': 'https://www.nasdaq.com/market-activity/stocks/screener',
+          }
+
+          source = json.loads(INPUT.read_text(encoding='utf-8'))
+          symbols = [str(x).strip().upper() for x in source.get('symbols') or []]
+          unique_symbols = sorted(set(symbols))
+          symbol_set_sha = hashlib.sha256(('\n'.join(unique_symbols) + '\n').encode()).hexdigest()
+          input_validation = {
+              'declared_population_count': source.get('population_count'),
+              'declared_population_sha256': source.get('population_sha256'),
+              'raw_symbol_count': len(symbols),
+              'unique_symbol_count': len(unique_symbols),
+              'duplicates': sorted({s for s in symbols if symbols.count(s) > 1}),
+              'symbol_set_sha256': symbol_set_sha,
+          }
+          (OUT / 'input-validation.json').write_text(json.dumps(input_validation, indent=2, sort_keys=True) + '\n')
+          if source.get('population_count') != EXPECTED_COUNT:
+              raise SystemExit(f'declared population count mismatch: {source.get("population_count")}')
+          if source.get('population_sha256') != EXPECTED_POPULATION_SHA:
+              raise SystemExit('frozen population hash mismatch')
+          if len(symbols) != EXPECTED_COUNT or len(unique_symbols) != EXPECTED_COUNT:
+              raise SystemExit(f'symbol count/uniqueness mismatch: raw={len(symbols)} unique={len(unique_symbols)}')
+          if symbol_set_sha != EXPECTED_SYMBOL_SET_SHA:
+              raise SystemExit(f'symbol-set hash mismatch: {symbol_set_sha}')
+
+          def number(value):
+              if value is None:
+                  return None
+              text = str(value).replace(',', '').replace('$', '').replace('%', '').strip()
+              if not text or text.upper() in {'--', 'N/A', 'NA', 'UNCH'}:
+                  return None
+              try:
+                  return float(text)
+              except ValueError:
+                  return None
+
+          def date_key(value):
+              text = str(value or '').strip()
+              if not text:
+                  return None
+              for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%b %d, %Y', '%B %d, %Y', '%m/%d/%Y %H:%M', '%Y-%m-%dT%H:%M:%S'):
+                  try:
+                      source_text = text[:19] if 'T' in fmt else text
+                      return datetime.strptime(source_text, fmt).date().isoformat()
+                  except ValueError:
+                      pass
+              match = re.search(r'(20\d{2})[-/](\d{1,2})[-/](\d{1,2})', text)
+              if match:
+                  return f'{int(match.group(1)):04d}-{int(match.group(2)):02d}-{int(match.group(3)):02d}'
+              return None
+
+          def extract_history(payload):
+              data = payload.get('data') or {}
+              points = {}
+              rows = ((data.get('tradesTable') or {}).get('rows') or [])
+              if isinstance(rows, list):
+                  for row in rows:
+                      if not isinstance(row, dict):
+                          continue
+                      date = date_key(row.get('date') or row.get('dateTime'))
+                      close = number(row.get('close') or row.get('closePrice'))
+                      high = number(row.get('high') or row.get('highPrice'))
+                      low = number(row.get('low') or row.get('lowPrice'))
+                      volume = number(row.get('volume'))
+                      if date and close is not None:
+                          points[date] = {'date': date, 'close': close, 'high': high if high is not None else close, 'low': low if low is not None else close, 'volume': volume}
+              chart = data.get('chart') or []
+              if isinstance(chart, list):
+                  for item in chart:
+                      z = item.get('z') if isinstance(item, dict) and isinstance(item.get('z'), dict) else item
+                      if not isinstance(z, dict):
+                          continue
+                      date = date_key(z.get('dateTime') or z.get('date') or z.get('x'))
+                      close = number(z.get('close') or z.get('closePrice') or z.get('y'))
+                      high = number(z.get('high') or z.get('highPrice'))
+                      low = number(z.get('low') or z.get('lowPrice'))
+                      volume = number(z.get('volume'))
+                      if date and close is not None:
+                          old = points.get(date, {})
+                          points[date] = {
+                              'date': date,
+                              'close': close,
+                              'high': high if high is not None else old.get('high', close),
+                              'low': low if low is not None else old.get('low', close),
+                              'volume': volume if volume is not None else old.get('volume'),
+                          }
+              return [points[k] for k in sorted(points)]
+
+          def symbol_variants(symbol):
+              candidates = [symbol]
+              if '/' in symbol:
+                  candidates.extend([symbol.replace('/', '-'), symbol.replace('/', '.'), symbol.replace('/', '^')])
+              if '.' in symbol:
+                  candidates.extend([symbol.replace('.', '-'), symbol.replace('.', '/')])
+              if '^' in symbol:
+                  candidates.extend([symbol.replace('^', '-'), symbol.replace('^', '/')])
+              output = []
+              for item in candidates:
+                  if item not in output:
+                      output.append(item)
+              return output
+
+          def build_urls(symbol_variant):
+              encoded = urllib.parse.quote(symbol_variant, safe='')
+              urls = []
+              for start, end in ((FROM_DATE, TO_DATE), ('08/01/2025', '07/31/2026')):
+                  query = urllib.parse.urlencode({'assetclass': 'stocks', 'fromdate': start, 'todate': end, 'limit': 5000})
+                  urls.append(f'https://api.nasdaq.com/api/quote/{encoded}/historical?{query}')
+                  chart_query = urllib.parse.urlencode({'assetclass': 'stocks', 'fromdate': start, 'todate': end})
+                  urls.append(f'https://api.nasdaq.com/api/quote/{encoded}/chart?{chart_query}')
+              return urls
+
+          def fetch_symbol(symbol):
+              attempts = []
+              best = None
+              best_raw = None
+              best_url = None
+              best_variant = None
+              for retry in range(4):
+                  for variant in symbol_variants(symbol):
+                      for url in build_urls(variant):
+                          try:
+                              request = urllib.request.Request(url, headers=HEADERS)
+                              with urllib.request.urlopen(request, timeout=60) as response:
+                                  raw = response.read()
+                                  status = response.status
+                              payload = json.loads(raw)
+                              history = extract_history(payload)
+                              cutoff_present = bool(history and history[-1]['date'] == TO_DATE) or any(p['date'] == TO_DATE for p in history)
+                              attempts.append({'url': url, 'variant': variant, 'status': status, 'history_rows': len(history), 'cutoff_present': cutoff_present})
+                              if history and (best is None or len(history) > len(best)):
+                                  best, best_raw, best_url, best_variant = history, raw, url, variant
+                              if cutoff_present and len(history) >= 5:
+                                  best, best_raw, best_url, best_variant = history, raw, url, variant
+                                  break
+                          except Exception as exc:
+                              attempts.append({'url': url, 'variant': variant, 'error': f'{type(exc).__name__}: {exc}'})
+                      if best and any(point['date'] == TO_DATE for point in best) and len(best) >= 5:
+                          break
+                  if best and any(point['date'] == TO_DATE for point in best) and len(best) >= 5:
+                      break
+                  time.sleep((2 ** retry) * 0.45 + random.random() * 0.25)
+
+              if not best or not any(point['date'] == TO_DATE for point in best):
+                  return {
+                      'symbol': symbol,
+                      'status': 'FAILED',
+                      'reason': 'NO_CUTOFF_HISTORY',
+                      'best_history_rows': len(best or []),
+                      'attempts': attempts,
+                  }, best_raw, best
+
+              history = [point for point in best if FROM_DATE <= point['date'] <= TO_DATE]
+              cutoff_point = next(point for point in history if point['date'] == TO_DATE)
+              highs = [point['high'] for point in history if point.get('high') is not None]
+              lows = [point['low'] for point in history if point.get('low') is not None]
+              if not highs or not lows or cutoff_point['close'] <= 0:
+                  return {
+                      'symbol': symbol,
+                      'status': 'FAILED',
+                      'reason': 'INVALID_PRICE_SERIES',
+                      'history_rows': len(history),
+                      'attempts': attempts,
+                  }, best_raw, history
+
+              high_52w = max(highs)
+              low_52w = min(lows)
+              cutoff_close = cutoff_point['close']
+              drawdown_pct = (1 - cutoff_close / high_52w) * 100 if high_52w > 0 else None
+              distance_above_low_pct = (cutoff_close / low_52w - 1) * 100 if low_52w > 0 else None
+              full_52week_coverage = history[0]['date'] <= '2025-08-15' and len(history) >= 200
+              mechanical_qualified = drawdown_pct is not None and distance_above_low_pct is not None and drawdown_pct >= 50 and distance_above_low_pct <= 10
+              near_qualified = (not mechanical_qualified and drawdown_pct is not None and distance_above_low_pct is not None and drawdown_pct >= 45 and distance_above_low_pct <= 15)
+              result = {
+                  'symbol': symbol,
+                  'status': 'SUCCESS',
+                  'source_symbol_variant': best_variant,
+                  'source_url': best_url,
+                  'raw_sha256': hashlib.sha256(best_raw).hexdigest() if best_raw else None,
+                  'history_rows': len(history),
+                  'first_history_date': history[0]['date'],
+                  'last_history_date': history[-1]['date'],
+                  'full_52week_coverage': full_52week_coverage,
+                  'cutoff_close': cutoff_close,
+                  'high_52week': high_52w,
+                  'low_52week': low_52w,
+                  'drawdown_from_high_pct': drawdown_pct,
+                  'distance_above_low_pct': distance_above_low_pct,
+                  'mechanical_qualified': mechanical_qualified,
+                  'near_qualified': near_qualified,
+              }
+              return result, best_raw, history
+
+          results = []
+          raw_payloads = {}
+          normalized_histories = {}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+              futures = {pool.submit(fetch_symbol, symbol): symbol for symbol in unique_symbols}
+              for index, future in enumerate(concurrent.futures.as_completed(futures), 1):
+                  result, raw, history = future.result()
+                  results.append(result)
+                  if raw is not None:
+                      raw_payloads[result['symbol']] = raw
+                  if history:
+                      normalized_histories[result['symbol']] = history
+                  if index % 100 == 0:
+                      print(f'completed {index}/{EXPECTED_COUNT}', flush=True)
+
+          results.sort(key=lambda row: row['symbol'])
+          failures = [row for row in results if row.get('status') != 'SUCCESS']
+          successes = [row for row in results if row.get('status') == 'SUCCESS']
+          qualifiers = [row for row in successes if row.get('mechanical_qualified')]
+          near_qualifiers = [row for row in successes if row.get('near_qualified')]
+          limited_history = [row for row in successes if not row.get('full_52week_coverage')]
+
+          metrics_bytes = ''.join(json.dumps(row, sort_keys=True, separators=(',', ':')) + '\n' for row in results).encode()
+          qualifier_bytes = ''.join(json.dumps(row, sort_keys=True, separators=(',', ':')) + '\n' for row in qualifiers).encode()
+          (OUT / 'pass2-metrics.jsonl').write_bytes(metrics_bytes)
+          (OUT / 'mechanical-qualifiers.jsonl').write_bytes(qualifier_bytes)
+          (OUT / 'near-qualifiers.jsonl').write_text(''.join(json.dumps(row, sort_keys=True) + '\n' for row in near_qualifiers))
+          (OUT / 'limited-history.jsonl').write_text(''.join(json.dumps(row, sort_keys=True) + '\n' for row in limited_history))
+          (OUT / 'failures.jsonl').write_text(''.join(json.dumps(row, sort_keys=True) + '\n' for row in failures))
+          with zipfile.ZipFile(OUT / 'raw-responses.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+              for symbol, raw in sorted(raw_payloads.items()):
+                  archive.writestr(f'{re.sub(r"[^A-Z0-9._-]", "_", symbol)}.json', raw)
+          with zipfile.ZipFile(OUT / 'normalized-histories.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+              for symbol, history in sorted(normalized_histories.items()):
+                  archive.writestr(f'{re.sub(r"[^A-Z0-9._-]", "_", symbol)}.json', json.dumps(history, sort_keys=True, separators=(',', ':')) + '\n')
+
+          summary = {
+              'record_type': 'Framework_v2_R38_pass2_mechanical_screen',
+              'scan_id': source.get('scan_id'),
+              'revision_id': source.get('revision_id'),
+              'cutoff': source.get('cutoff'),
+              'captured_at_utc': datetime.now(timezone.utc).isoformat(),
+              'source': 'Nasdaq official historical/chart APIs',
+              'population_count': EXPECTED_COUNT,
+              'population_sha256': EXPECTED_POPULATION_SHA,
+              'symbol_set_sha256': symbol_set_sha,
+              'success_count': len(successes),
+              'failure_count': len(failures),
+              'full_52week_coverage_count': len(successes) - len(limited_history),
+              'limited_history_count': len(limited_history),
+              'mechanical_qualifier_count': len(qualifiers),
+              'near_qualifier_count': len(near_qualifiers),
+              'raw_response_count': len(raw_payloads),
+              'normalized_history_count': len(normalized_histories),
+              'metrics_sha256': hashlib.sha256(metrics_bytes).hexdigest(),
+              'qualifiers_sha256': hashlib.sha256(qualifier_bytes).hexdigest(),
+              'mechanical_rules': {
+                  'minimum_drawdown_from_52week_high_pct': 50,
+                  'maximum_distance_above_52week_low_pct': 10,
+                  'near_minimum_drawdown_pct': 45,
+                  'near_maximum_distance_above_low_pct': 15,
+              },
+              'pass2_complete': len(failures) == 0 and len(successes) == EXPECTED_COUNT,
+          }
+          (OUT / 'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          if failures:
+              raise SystemExit(2)
+          PY
+
+      - name: Upload Pass 2 artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: framework-v2-pass2-52week-${{ github.event.pull_request.head.sha }}
+          path: framework-v2-pass2-52week-screen/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
+
+      - name: Enforce complete Pass 2 capture
+        if: steps.screen.outcome != 'success'
+        run: exit 1
