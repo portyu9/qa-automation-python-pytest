@@ -1,0 +1,56 @@
+name: Framework v2 corrected-population guard migration
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  migrate:
+    if: github.head_ref == 'data-capture/nasdaq-smallcap-20260803'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: data-capture/nasdaq-smallcap-20260803
+          fetch-depth: 0
+      - name: Patch stale population guards
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib
+          files=[
+            pathlib.Path('.github/workflows/framework-v2-pass2-52week-screen.yml'),
+            pathlib.Path('.github/workflows/framework-v2-pass2-class-share-bridge.yml'),
+            pathlib.Path('.github/workflows/framework-v2-pass3-sec-hard-veto.yml'),
+          ]
+          replacements={
+            'EXPECTED_COUNT = 1283':'EXPECTED_COUNT = 1286',
+            "EXPECTED_POPULATION_SHA = '664a08efd5a45337525611b550a1baef3c1d904d3183778f5b556dc28893ac27'":"EXPECTED_POPULATION_SHA = '1da404551660dc9e91c382d451712f0b44471adaf11d7b278072d5c3b2094b17'",
+            "EXPECTED_SYMBOL_SET_SHA = '21e52c8c7e4937d3e741403d68be02feb1e5cfab59e5d71e6bbef81c3f58f9fe'":"EXPECTED_SYMBOL_SET_SHA = '1da404551660dc9e91c382d451712f0b44471adaf11d7b278072d5c3b2094b17'",
+            "EXPECTED_POPULATION_SHA = '664a08efd5a45337525611b550a1baef3c1d904d3183778f5b556dc28893ac27'":"EXPECTED_POPULATION_SHA = '1da404551660dc9e91c382d451712f0b44471adaf11d7b278072d5c3b2094b17'",
+            '"population_count":1283':'"population_count":1286',
+            '"population_sha256":"664a08efd5a45337525611b550a1baef3c1d904d3183778f5b556dc28893ac27"':'"population_sha256":"1da404551660dc9e91c382d451712f0b44471adaf11d7b278072d5c3b2094b17"',
+          }
+          changed=[]
+          for p in files:
+            text=p.read_text()
+            new=text
+            for a,b in replacements.items(): new=new.replace(a,b)
+            if new!=text:
+              p.write_text(new);changed.append(str(p))
+          stale=pathlib.Path('scan-inputs/pass3-qualifiers-20260731.json')
+          if stale.exists():
+            stale.write_text('{"record_type":"STALE_INVALIDATED_BY_POPULATION_1da404551660dc9e91c382d451712f0b44471adaf11d7b278072d5c3b2094b17","qualifiers":[],"qualifier_count":0}\n')
+            changed.append(str(stale))
+          print('\n'.join(changed))
+          PY
+          if git diff --quiet; then
+            echo 'No stale guards remain.'
+            exit 0
+          fi
+          git config user.name framework-v2-guard-migration
+          git config user.email framework-v2-guard-migration@users.noreply.github.com
+          git add .github/workflows/framework-v2-pass2-52week-screen.yml .github/workflows/framework-v2-pass2-class-share-bridge.yml .github/workflows/framework-v2-pass3-sec-hard-veto.yml scan-inputs/pass3-qualifiers-20260731.json
+          git commit -m 'chore: bind Pass 2 and Pass 3 to corrected 1286-symbol freeze'
+          git push origin HEAD:data-capture/nasdaq-smallcap-20260803
