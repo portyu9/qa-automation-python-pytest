@@ -1,0 +1,42 @@
+name: SEC access probe
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.head_ref == 'data-capture/nasdaq-smallcap-20260803'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe official SEC JSON routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          UA='FrameworkV2Audit/1.0 yunior-portal-research'
+          python - <<'PY'
+          import json, urllib.request
+          ua='FrameworkV2Audit/1.0 yunior-portal-research'
+          urls=[
+            'https://www.sec.gov/files/company_tickers.json',
+            'https://www.sec.gov/files/company_tickers_exchange.json',
+            'https://data.sec.gov/submissions/CIK0002015955.json',
+          ]
+          results=[]
+          for url in urls:
+            headers={'User-Agent':ua,'Accept':'application/json,text/plain,*/*','Accept-Encoding':'identity','Referer':'https://www.sec.gov/'}
+            try:
+              req=urllib.request.Request(url,headers=headers)
+              with urllib.request.urlopen(req,timeout=45) as response:
+                raw=response.read()
+                results.append({'url':url,'status':response.status,'bytes':len(raw),'prefix':raw[:80].decode('utf-8','replace')})
+            except Exception as exc:
+              results.append({'url':url,'error':f'{type(exc).__name__}: {exc}'})
+          print(json.dumps(results,indent=2))
+          if not any(r.get('status')==200 for r in results): raise SystemExit(2)
+          PY
