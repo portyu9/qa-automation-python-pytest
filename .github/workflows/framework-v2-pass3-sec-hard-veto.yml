@@ -1,0 +1,378 @@
+name: Framework v2 Pass 3 SEC hard-veto audit
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - .github/workflows/framework-v2-pass3-sec-hard-veto.yml
+      - scan-inputs/pass3-qualifiers-20260731.json
+
+permissions:
+  contents: read
+
+jobs:
+  pass3:
+    if: github.head_ref == 'data-capture/nasdaq-smallcap-20260803'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Capture SEC evidence and apply hard-veto rules
+        id: audit
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          python - <<'PY'
+          import concurrent.futures
+          import hashlib
+          import html
+          import json
+          import pathlib
+          import re
+          import threading
+          import time
+          import urllib.request
+          import zipfile
+          from datetime import datetime, timezone
+
+          INPUT = pathlib.Path('scan-inputs/pass3-qualifiers-20260731.json')
+          OUT = pathlib.Path('framework-v2-pass3-sec-hard-veto')
+          RAW = OUT / 'raw-sec-documents'
+          RAW.mkdir(parents=True, exist_ok=True)
+          USER_AGENT = 'FrameworkV2R38Audit/1.0 yunior-portal-research'
+          HEADERS = {
+              'User-Agent': USER_AGENT,
+              'Accept': 'application/json,text/html,text/plain,*/*',
+              'Accept-Encoding': 'identity',
+              'Referer': 'https://www.sec.gov/',
+          }
+          INFO_CUTOFF = '2026-08-03'
+          EXPECTED_COUNT = 68
+          EXPECTED_QUALIFIER_SHA = '3575428394e94f142d07c018d3d27f44eb8d9fe2e32aa1f6fe49eceaf1771eef'
+          EXPECTED_POPULATION_SHA = '664a08efd5a45337525611b550a1baef3c1d904d3183778f5b556dc28893ac27'
+          RELEVANT_FORMS = {
+              '10-K', '10-K/A', '10-Q', '10-Q/A', '8-K', '8-K/A', '20-F', '20-F/A', '40-F', '40-F/A',
+              '6-K', '6-K/A', 'S-1', 'S-1/A', 'S-3', 'S-3/A', 'F-1', 'F-1/A', 'F-3', 'F-3/A',
+              '424B1', '424B2', '424B3', '424B4', '424B5', '424B7', '424B8', '424B9',
+              'NT 10-K', 'NT 10-Q', '25', '25-NSE', 'PRE 14A', 'DEF 14A', 'DEFA14A',
+          }
+          OFFERING_FORMS = {'S-1', 'S-1/A', 'S-3', 'S-3/A', 'F-1', 'F-1/A', 'F-3', 'F-3/A', '424B1', '424B2', '424B3', '424B4', '424B5', '424B7', '424B8', '424B9'}
+          CURRENT_FORMS = {'8-K', '8-K/A', '6-K', '6-K/A'}
+          PERIODIC_FORMS = {'10-K', '10-K/A', '10-Q', '10-Q/A', '20-F', '20-F/A', '40-F', '40-F/A'}
+          LATE_FORMS = {'NT 10-K', 'NT 10-Q'}
+
+          source = json.loads(INPUT.read_text(encoding='utf-8'))
+          symbols = [str(value).strip().upper() for value in source.get('symbols') or []]
+          if source.get('qualifier_count') != EXPECTED_COUNT or len(symbols) != EXPECTED_COUNT or len(set(symbols)) != EXPECTED_COUNT:
+              raise SystemExit(f'Pass3 input count/uniqueness mismatch: declared={source.get("qualifier_count")} raw={len(symbols)} unique={len(set(symbols))}')
+          if source.get('pass2_qualifiers_sha256') != EXPECTED_QUALIFIER_SHA or source.get('population_sha256') != EXPECTED_POPULATION_SHA:
+              raise SystemExit('Pass3 input hash mismatch')
+
+          lock = threading.Lock()
+          last_request = [0.0]
+          def throttle():
+              with lock:
+                  wait = 0.12 - (time.monotonic() - last_request[0])
+                  if wait > 0:
+                      time.sleep(wait)
+                  last_request[0] = time.monotonic()
+
+          def get(url, attempts=4):
+              for retry in range(attempts):
+                  try:
+                      throttle()
+                      request = urllib.request.Request(url, headers=HEADERS)
+                      with urllib.request.urlopen(request, timeout=60) as response:
+                          raw = response.read()
+                          status = response.status
+                      if status != 200:
+                          raise RuntimeError(f'HTTP {status}')
+                      return raw
+                  except Exception:
+                      if retry + 1 == attempts:
+                          raise
+                      time.sleep(0.5 * (2 ** retry))
+
+          mapping_url = 'https://www.sec.gov/files/company_tickers_exchange.json'
+          mapping_raw = get(mapping_url)
+          mapping = json.loads(mapping_raw)
+          fields = mapping.get('fields') or []
+          ticker_map = {}
+          for values in mapping.get('data') or []:
+              row = dict(zip(fields, values))
+              ticker = str(row.get('ticker') or '').strip().upper()
+              if ticker:
+                  ticker_map[ticker] = row
+
+          def lookup(symbol):
+              aliases = [symbol, symbol.replace('/', '-'), symbol.replace('.', '-'), symbol.replace('^', '-')]
+              for alias in aliases:
+                  if alias in ticker_map:
+                      return ticker_map[alias]
+              return None
+
+          mappings = {symbol: lookup(symbol) for symbol in symbols}
+          unmapped = [symbol for symbol, row in mappings.items() if not row]
+          if unmapped:
+              (OUT / 'unmapped-symbols.json').write_text(json.dumps(unmapped, indent=2) + '\n')
+              raise SystemExit(f'Unmapped SEC symbols: {unmapped}')
+
+          def fetch_submission(symbol):
+              mapped = mappings[symbol]
+              cik = int(mapped['cik'])
+              cik10 = f'{cik:010d}'
+              url = f'https://data.sec.gov/submissions/CIK{cik10}.json'
+              raw = get(url)
+              payload = json.loads(raw)
+              return symbol, cik, mapped, url, raw, payload
+
+          submissions = {}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+              futures = [pool.submit(fetch_submission, symbol) for symbol in symbols]
+              for index, future in enumerate(concurrent.futures.as_completed(futures), 1):
+                  symbol, cik, mapped, url, raw, payload = future.result()
+                  submissions[symbol] = {'cik': cik, 'mapped': mapped, 'url': url, 'raw': raw, 'payload': payload}
+                  if index % 20 == 0:
+                      print(f'submissions {index}/{EXPECTED_COUNT}', flush=True)
+
+          def filing_rows(payload):
+              recent = ((payload.get('filings') or {}).get('recent') or {})
+              keys = ['accessionNumber', 'filingDate', 'reportDate', 'acceptanceDateTime', 'act', 'form', 'fileNumber', 'filmNumber', 'items', 'size', 'isXBRL', 'isInlineXBRL', 'primaryDocument', 'primaryDocDescription']
+              count = max([len(recent.get(key) or []) for key in keys] or [0])
+              rows = []
+              for index in range(count):
+                  row = {key: (recent.get(key) or [None] * count)[index] if index < len(recent.get(key) or []) else None for key in keys}
+                  filing_date = str(row.get('filingDate') or '')
+                  form = str(row.get('form') or '')
+                  if filing_date and filing_date <= INFO_CUTOFF and form in RELEVANT_FORMS:
+                      rows.append(row)
+              return rows
+
+          def choose_filings(rows):
+              rows = sorted(rows, key=lambda row: (str(row.get('filingDate') or ''), str(row.get('acceptanceDateTime') or '')), reverse=True)
+              selected = []
+              caps = {'periodic': 4, 'current': 8, 'offering': 6, 'late': 2, 'other': 3}
+              used = {key: 0 for key in caps}
+              for row in rows:
+                  form = row.get('form')
+                  if form in PERIODIC_FORMS:
+                      bucket = 'periodic'
+                  elif form in CURRENT_FORMS:
+                      bucket = 'current'
+                  elif form in OFFERING_FORMS:
+                      bucket = 'offering'
+                  elif form in LATE_FORMS:
+                      bucket = 'late'
+                  else:
+                      bucket = 'other'
+                  if used[bucket] < caps[bucket]:
+                      selected.append(row)
+                      used[bucket] += 1
+              return selected
+
+          def document_url(cik, row):
+              accession = str(row.get('accessionNumber') or '').replace('-', '')
+              primary = str(row.get('primaryDocument') or '').strip()
+              if not accession or not primary:
+                  return None
+              return f'https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/{primary}'
+
+          def textify(raw):
+              text = raw.decode('utf-8', errors='replace')
+              text = re.sub(r'(?is)<script.*?</script>|<style.*?</style>', ' ', text)
+              text = re.sub(r'(?s)<[^>]+>', ' ', text)
+              text = html.unescape(text)
+              text = re.sub(r'\s+', ' ', text)
+              return text
+
+          patterns = {
+              'bankruptcy_direct': [
+                  r'filed (?:a )?voluntary petition(?:s)? (?:for relief )?under chapter 11',
+                  r'commenced (?:voluntary )?chapter 11 cases?',
+                  r'bankruptcy court.*chapter 11',
+                  r'entered bankruptcy proceedings',
+              ],
+              'going_concern_direct': [
+                  r'substantial doubt (?:exists )?about (?:the company.s|our) ability to continue as a going concern',
+                  r'raise substantial doubt about (?:the company.s|our) ability to continue as a going concern',
+                  r'going concern qualification',
+              ],
+              'delisting_direct': [
+                  r'received (?:a )?(?:staff )?delisting determination',
+                  r'trading (?:in|of) .* will be suspended',
+                  r'securities will be delisted',
+                  r'notification of removal from listing',
+              ],
+              'liquidation_direct': [
+                  r'plan of liquidation and dissolution',
+                  r'approved (?:a )?plan of liquidation',
+                  r'intends to liquidate and dissolve',
+                  r'wind[- ]up and dissolution',
+              ],
+              'reverse_split': [r'reverse stock split', r'share consolidation', r'consolidation of (?:its )?ordinary shares'],
+              'active_financing': [
+                  r'at[- ]the[- ]market offering', r'equity distribution agreement', r'registered direct offering',
+                  r'securities purchase agreement', r'private placement', r'convertible (?:promissory )?notes?',
+                  r'common stock purchase agreement', r'standby equity purchase agreement',
+              ],
+              'material_weakness_or_restatement': [r'material weakness', r'restatement of previously issued financial statements', r'non[- ]reliance on previously issued financial statements'],
+          }
+          compiled = {category: [re.compile(pattern, re.I) for pattern in values] for category, values in patterns.items()}
+
+          def scan(text, category):
+              snippets = []
+              for regex in compiled[category]:
+                  for match in regex.finditer(text):
+                      start = max(0, match.start() - 260)
+                      end = min(len(text), match.end() + 360)
+                      snippets.append(text[start:end])
+                      if len(snippets) >= 5:
+                          return snippets
+              return snippets
+
+          def unresolved_late_filing(rows):
+              latest = {}
+              for row in rows:
+                  form = str(row.get('form') or '')
+                  date = str(row.get('filingDate') or '')
+                  latest[form] = max(date, latest.get(form, ''))
+              late_10k = latest.get('NT 10-K', '') > max(latest.get('10-K', ''), latest.get('10-K/A', ''))
+              late_10q = latest.get('NT 10-Q', '') > max(latest.get('10-Q', ''), latest.get('10-Q/A', ''))
+              return late_10k or late_10q, {'latest_forms': latest, 'unresolved_nt_10k': late_10k, 'unresolved_nt_10q': late_10q}
+
+          results = []
+          evidence_rows = []
+          raw_docs = {}
+          document_failures = []
+
+          for issuer_index, symbol in enumerate(sorted(symbols), 1):
+              submission = submissions[symbol]
+              payload = submission['payload']
+              cik = submission['cik']
+              rows = filing_rows(payload)
+              selected = choose_filings(rows)
+              category_hits = {category: [] for category in patterns}
+              filing_evidence = []
+              for row in selected:
+                  url = document_url(cik, row)
+                  if not url:
+                      continue
+                  try:
+                      raw = get(url)
+                      digest = hashlib.sha256(raw).hexdigest()
+                      text = textify(raw)
+                      doc_hits = {}
+                      for category in patterns:
+                          snippets = scan(text, category)
+                          if snippets:
+                              doc_hits[category] = snippets
+                              category_hits[category].extend(snippets)
+                      safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', f'{symbol}_{row.get("accessionNumber")}_{row.get("primaryDocument")}')
+                      raw_docs[safe_name] = raw
+                      filing_evidence.append({
+                          'form': row.get('form'), 'filing_date': row.get('filingDate'), 'report_date': row.get('reportDate'),
+                          'accession_number': row.get('accessionNumber'), 'primary_document': row.get('primaryDocument'),
+                          'url': url, 'raw_sha256': digest, 'hits': doc_hits,
+                      })
+                  except Exception as exc:
+                      document_failures.append({'symbol': symbol, 'form': row.get('form'), 'filing_date': row.get('filingDate'), 'url': url, 'error': f'{type(exc).__name__}: {exc}'})
+
+              unresolved_late, late_detail = unresolved_late_filing(rows)
+              direct_veto_reasons = []
+              if category_hits['bankruptcy_direct']:
+                  direct_veto_reasons.append('ACTIVE_BANKRUPTCY_OR_CHAPTER_11_EVIDENCE')
+              if category_hits['going_concern_direct']:
+                  direct_veto_reasons.append('SUBSTANTIAL_DOUBT_GOING_CONCERN_EVIDENCE')
+              if category_hits['delisting_direct']:
+                  direct_veto_reasons.append('DELISTING_OR_TRADING_SUSPENSION_EVIDENCE')
+              if category_hits['liquidation_direct']:
+                  direct_veto_reasons.append('LIQUIDATION_OR_DISSOLUTION_EVIDENCE')
+              if unresolved_late:
+                  direct_veto_reasons.append('UNRESOLVED_LATE_PERIODIC_FILING')
+
+              result = {
+                  'symbol': symbol,
+                  'sec_cik': cik,
+                  'sec_title': payload.get('name') or submission['mapped'].get('name'),
+                  'sec_entity_type': payload.get('entityType'),
+                  'sec_sic': payload.get('sic'),
+                  'sec_sic_description': payload.get('sicDescription'),
+                  'latest_filing_date_at_cutoff': max([str(row.get('filingDate') or '') for row in rows] or ['']),
+                  'relevant_filing_count': len(rows),
+                  'documents_selected': len(selected),
+                  'documents_captured': len(filing_evidence),
+                  'auto_hard_veto': bool(direct_veto_reasons),
+                  'hard_veto_reasons': direct_veto_reasons,
+                  'reverse_split_flag': bool(category_hits['reverse_split']),
+                  'active_financing_flag': bool(category_hits['active_financing']),
+                  'material_weakness_or_restatement_flag': bool(category_hits['material_weakness_or_restatement']),
+                  'late_filing_detail': late_detail,
+                  'category_hit_counts': {category: len(values) for category, values in category_hits.items()},
+                  'filings': filing_evidence,
+                  'status': 'SUCCESS',
+              }
+              results.append(result)
+              for filing in filing_evidence:
+                  if filing['hits']:
+                      evidence_rows.append({'symbol': symbol, **filing})
+              if issuer_index % 10 == 0:
+                  print(f'issuers {issuer_index}/{EXPECTED_COUNT}', flush=True)
+
+          results.sort(key=lambda row: row['symbol'])
+          auto_veto = [row for row in results if row['auto_hard_veto']]
+          financing = [row for row in results if row['active_financing_flag']]
+          reverse_splits = [row for row in results if row['reverse_split_flag']]
+          accounting = [row for row in results if row['material_weakness_or_restatement_flag']]
+
+          result_bytes = ''.join(json.dumps(row, sort_keys=True, separators=(',', ':')) + '\n' for row in results).encode()
+          (OUT / 'pass3-sec-audit.jsonl').write_bytes(result_bytes)
+          (OUT / 'auto-hard-veto.jsonl').write_text(''.join(json.dumps(row, sort_keys=True) + '\n' for row in auto_veto))
+          (OUT / 'financing-risk.jsonl').write_text(''.join(json.dumps(row, sort_keys=True) + '\n' for row in financing))
+          (OUT / 'reverse-split-risk.jsonl').write_text(''.join(json.dumps(row, sort_keys=True) + '\n' for row in reverse_splits))
+          (OUT / 'accounting-risk.jsonl').write_text(''.join(json.dumps(row, sort_keys=True) + '\n' for row in accounting))
+          (OUT / 'evidence-hits.jsonl').write_text(''.join(json.dumps(row, sort_keys=True) + '\n' for row in evidence_rows))
+          (OUT / 'document-failures.jsonl').write_text(''.join(json.dumps(row, sort_keys=True) + '\n' for row in document_failures))
+          with zipfile.ZipFile(OUT / 'raw-sec-documents.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+              for name, raw in sorted(raw_docs.items()):
+                  archive.writestr(name, raw)
+
+          summary = {
+              'record_type': 'Framework_v2_R38_pass3_sec_hard_veto_audit',
+              'scan_id': source.get('scan_id'),
+              'revision_id': source.get('revision_id'),
+              'information_cutoff': source.get('information_cutoff'),
+              'captured_at_utc': datetime.now(timezone.utc).isoformat(),
+              'qualifier_count': EXPECTED_COUNT,
+              'mapped_count': len(mappings),
+              'submission_success_count': len(submissions),
+              'document_failure_count': len(document_failures),
+              'auto_hard_veto_count': len(auto_veto),
+              'financing_risk_count': len(financing),
+              'reverse_split_risk_count': len(reverse_splits),
+              'accounting_risk_count': len(accounting),
+              'raw_document_count': len(raw_docs),
+              'audit_sha256': hashlib.sha256(result_bytes).hexdigest(),
+              'complete': len(results) == EXPECTED_COUNT and not document_failures,
+          }
+          (OUT / 'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          if document_failures:
+              raise SystemExit(2)
+          PY
+
+      - name: Upload Pass 3 SEC audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: framework-v2-pass3-sec-audit-${{ github.event.pull_request.head.sha }}
+          path: framework-v2-pass3-sec-hard-veto/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
+
+      - name: Enforce complete Pass 3 SEC capture
+        if: steps.audit.outcome != 'success'
+        run: exit 1
