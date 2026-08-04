@@ -1,0 +1,62 @@
+name: Framework v2 population reconciliation
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  reconcile:
+    if: github.head_ref == 'data-capture/nasdaq-smallcap-20260803'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download full July 31 bridge
+        uses: actions/download-artifact@v4
+        with:
+          name: nasdaq-full-july31-a3e02b77c87ccb8e3c41faeeaa24b5b45c821b53
+          path: inputs/full
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: portyu9/qa-automation-python-pytest
+          run-id: 30910850267
+      - name: Download SEC product audit
+        uses: actions/download-artifact@v4
+        with:
+          name: sec-product-audit-v2-a3e02b77c87ccb8e3c41faeeaa24b5b45c821b53
+          path: inputs/sec
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: portyu9/qa-automation-python-pytest
+          run-id: 30910850169
+      - name: Reconcile sets
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib,json,pathlib
+          O=pathlib.Path('population-reconciliation');O.mkdir(exist_ok=True)
+          def jl(p):
+            return [json.loads(x) for x in pathlib.Path(p).read_text().splitlines() if x.strip()]
+          proposed=json.loads(pathlib.Path('scan-inputs/frozen-population-20260731.json').read_text())
+          p=set(proposed['symbols'])
+          cutoff=jl('inputs/full/cutoff.jsonl')
+          sec=jl('inputs/sec/exclusions.jsonl')
+          excluded={x['symbol'] for x in sec}
+          c={x['symbol'] for x in cutoff if x['symbol'] not in excluded}
+          rows={x['symbol']:x for x in cutoff}
+          exrows={x['symbol']:x for x in sec}
+          add=sorted(c-p);extra=sorted(p-c);common=sorted(p&c)
+          details=[]
+          for s in sorted(set(add+extra)):
+            details.append({'symbol':s,'direction':'MISSING_FROM_PROPOSED' if s in add else 'EXTRA_IN_PROPOSED','bridge':rows.get(s),'sec_exclusion':exrows.get(s)})
+          canonical='\n'.join(sorted(p))+'\n'
+          result={'proposed_count':len(p),'proposed_declared_count':proposed.get('population_count'),'proposed_declared_sha256':proposed.get('population_sha256'),'proposed_recomputed_sha256':hashlib.sha256(canonical.encode()).hexdigest(),'full_cutoff_count':len(cutoff),'sec_exclusion_intersection_count':len({x['symbol'] for x in cutoff}&excluded),'post_sec_candidate_count':len(c),'missing_from_proposed_count':len(add),'extra_in_proposed_count':len(extra),'common_count':len(common),'missing_from_proposed':add,'extra_in_proposed':extra,'set_equation_closed':not add and not extra}
+          (O/'summary.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          (O/'differences.jsonl').write_text(''.join(json.dumps(x,sort_keys=True)+'\n' for x in details))
+          (O/'post-sec-candidates.txt').write_text('\n'.join(sorted(c))+'\n')
+          print(json.dumps(result,indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: framework-v2-population-reconciliation-${{ github.event.pull_request.head.sha }}
+          path: population-reconciliation/
+          retention-days: 7
