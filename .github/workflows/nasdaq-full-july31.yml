@@ -1,0 +1,125 @@
+name: Nasdaq full July 31 bridge
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  bridge:
+    if: github.head_ref == 'data-capture/nasdaq-smallcap-20260803'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: nasdaq-smallcap-official-4c1cd5bc3b8f9d9d6537ee92c8f1623074811102
+          path: src
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: portyu9/qa-automation-python-pytest
+          run-id: 30871955749
+      - id: run
+        continue-on-error: true
+        shell: bash
+        run: |
+          python - <<'PY'
+          import concurrent.futures as cf, hashlib, json, pathlib, random, re, time, urllib.parse, urllib.request, zipfile
+          from datetime import datetime, timezone
+          O=pathlib.Path('full-july31'); O.mkdir(exist_ok=True)
+          H={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0 Safari/537.36','Accept':'application/json, text/plain, */*','Origin':'https://www.nasdaq.com','Referer':'https://www.nasdaq.com/market-activity/stocks/screener'}
+          def n(v):
+            try:return float(str(v).replace(',','').replace('$','').strip())
+            except:return None
+          def pipe(p):
+            z=p.read_text(errors='replace').splitlines(); h=z[0].split('|'); return [dict(zip(h,x.split('|'))) for x in z[1:] if x and not x.startswith('File Creation Time') and len(x.split('|'))==len(h)]
+          R=pathlib.Path('src'); af=list(R.rglob('nasdaq-all-listed-official.json'))[0]; nb=list(R.rglob('nasdaqlisted.txt'))[0]; ob=list(R.rglob('otherlisted.txt'))[0]
+          raw=af.read_bytes(); rows=(json.loads(raw).get('data') or {}).get('rows') or []
+          A={}
+          for x in pipe(nb):
+            s=(x.get('Symbol') or '').upper(); A[s]=('NASDAQ',x.get('Security Name'),x.get('ETF'),x.get('Test Issue'))
+          E={'N':'NYSE','A':'NYSE AMERICAN','P':'NYSE ARCA','Z':'CBOE BZX','V':'IEX','M':'CHX'}
+          for x in pipe(ob):
+            q=(E.get(x.get('Exchange'),x.get('Exchange')),x.get('Security Name'),x.get('ETF'),x.get('Test Issue'))
+            for k in ('ACT Symbol','CQS Symbol','NASDAQ Symbol'):
+              s=(x.get(k) or '').upper()
+              if s:A[s]=q
+          def d(s):
+            for v in (s,s.replace('/','.'),s.replace('^','$'),s.replace('^','-'),s.replace('/','-')):
+              if v in A:return A[v]
+            return ('', '', '', '')
+          def keep(x):
+            s=x['symbol']; ex,ln,etf,test=d(s); x.update(exchange=ex,listing_security_name=ln,directory_etf=etf,directory_test_issue=test)
+            if etf=='Y' or test=='Y' or '^' in s or '$' in s:return False
+            t=(ln or x.get('name') or '').lower(); ind=(x.get('industry') or '').lower(); nm=(x.get('name') or '').lower()
+            bad=[r'\b(warrant|warrants|right|rights)\b',r'\b(senior notes?|subordinated notes?|junior subordinated notes?|notes? due|debentures?|bonds?)\b',r'\b(corporate units?|tangible equity units?|equity units?|option note units?)\b',r'\b(preferred stock|preferred shares?|preference shares?|trust preferred|pfd)\b',r'\b(depositary|depository) shares?\b.*\bpreferred\b',r'\b(exchange traded fund|exchange-traded fund|exchange traded note|exchange-traded note|etf|etn)\b',r'\b(trust certificate|capital securities|income securities)\b']
+            if any(re.search(p,t) for p in bad):return False
+            if re.search(r'\b(unit|units)\b',t) and not re.search(r'common units?',t):return False
+            if 'blank checks' in ind or re.search(r'\b(blank check|special purpose acquisition|spac)\b',nm):return False
+            return True
+          U=[]; P=[]; M=[]
+          for z in rows:
+            x=dict(z); x['symbol']=(x.get('symbol') or '').upper()
+            if not keep(x):P.append(x);continue
+            x['cap']=n(x.get('marketCap')); x['price']=n(x.get('lastsale')); x['chg']=n(x.get('netchange'))
+            (U if x.get('exchange') and x['cap'] and x['price'] else M).append(x)
+          def dk(v):
+            s=str(v or '')
+            m=re.search(r'(20\d{2})[-/](\d{1,2})[-/](\d{1,2})',s)
+            if m:return f'{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}'
+            for f in ('%m/%d/%Y','%b %d, %Y','%B %d, %Y'):
+              try:return datetime.strptime(s,f).date().isoformat()
+              except:pass
+          def pts(p):
+            q={}; data=p.get('data') or {}
+            for a in (data.get('chart') or []):
+              a=a.get('z') if isinstance(a,dict) and isinstance(a.get('z'),dict) else a
+              if isinstance(a,dict):
+                k=dk(a.get('dateTime') or a.get('date') or a.get('x')); v=n(a.get('close') or a.get('closePrice') or a.get('y'))
+                if k and v is not None:q[k]=v
+            for a in (((data.get('tradesTable') or {}).get('rows')) or []):
+              k=dk(a.get('date') or a.get('dateTime')); v=n(a.get('close') or a.get('closePrice'))
+              if k and v is not None:q[k]=v
+            return q
+          def get(x):
+            s=x['symbol']; e=urllib.parse.quote(s,safe=''); urls=[]
+            for a,b in (('2026-07-31','2026-08-03'),('07/31/2026','08/03/2026')):
+              q=urllib.parse.urlencode({'assetclass':'stocks','fromdate':a,'todate':b}); urls += [f'https://api.nasdaq.com/api/quote/{e}/chart?{q}',f'https://api.nasdaq.com/api/quote/{e}/historical?{q}&limit=10']
+            att=[]
+            for r in range(3):
+              for u in urls:
+                try:
+                  with urllib.request.urlopen(urllib.request.Request(u,headers=H),timeout=45) as f:b=f.read()
+                  q=pts(json.loads(b))
+                  if '2026-07-31' in q and '2026-08-03' in q:
+                    sh=x['cap']/x['price']; mc=sh*q['2026-07-31']; prev=x['price']-x['chg'] if x['chg'] is not None else None; ratio=prev/q['2026-08-03'] if prev else None; rr=round(ratio) if ratio else None; sp=rr if ratio and 2<=rr<=200 and abs(ratio-rr)/rr<=.02 else None
+                    return {'symbol':s,'exchange':x['exchange'],'security_name':x['listing_security_name'] or x.get('name'),'country':x.get('country'),'current_cap':x['cap'],'current_price':x['price'],'jul31_close':q['2026-07-31'],'aug3_close':q['2026-08-03'],'cutoff_cap':mc,'in_band':300000000<=mc<=2000000000,'split_ratio':sp,'url':u,'sha256':hashlib.sha256(b).hexdigest(),'status':'SUCCESS'},b
+                  att.append({'url':u,'dates':sorted(q)})
+                except Exception as e:att.append({'url':u,'error':f'{type(e).__name__}: {e}'})
+              time.sleep((2**r)*.35+random.random()*.2)
+            return {'symbol':s,'exchange':x['exchange'],'security_name':x['listing_security_name'] or x.get('name'),'status':'FAILED','attempts':att},None
+          Z=[]; B={}
+          with cf.ThreadPoolExecutor(max_workers=24) as pool:
+            fs={pool.submit(get,x):x['symbol'] for x in U}
+            for i,f in enumerate(cf.as_completed(fs),1):
+              z,b=f.result(); Z.append(z)
+              if b:B[z['symbol']]=b
+              if i%250==0:print(i,len(U),flush=True)
+          Z.sort(key=lambda x:x['symbol']); F=[x for x in Z if x['status']!='SUCCESS']; C=[x for x in Z if x.get('in_band')]; S=[x for x in Z if x.get('split_ratio')]
+          for fn,data in [('all.jsonl',Z),('cutoff.jsonl',C),('failures.jsonl',F),('missing.jsonl',M),('prohibited.jsonl',P),('splits.jsonl',S)]: (O/fn).write_text(''.join(json.dumps(x,sort_keys=True)+'\n' for x in data))
+          with zipfile.ZipFile(O/'raw.zip','w',zipfile.ZIP_DEFLATED) as a:
+            for s,b in sorted(B.items()):a.writestr(s+'.json',b)
+          Q={'all_listed':len(rows),'candidate_with_inputs':len(U),'prohibited':len(P),'missing_inputs':len(M),'success':len(Z)-len(F),'failures':len(F),'cutoff_in_band':len(C),'split_like':len(S),'source_sha256':hashlib.sha256(raw).hexdigest(),'captured_at_utc':datetime.now(timezone.utc).isoformat(),'complete':not F}
+          (O/'summary.json').write_text(json.dumps(Q,indent=2,sort_keys=True)+'\n');print(json.dumps(Q,indent=2,sort_keys=True))
+          if F:raise SystemExit(2)
+          PY
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nasdaq-full-july31-${{ github.event.pull_request.head.sha }}
+          path: full-july31/
+          if-no-files-found: error
+          retention-days: 7
+      - if: steps.run.outcome != 'success'
+        run: exit 1
