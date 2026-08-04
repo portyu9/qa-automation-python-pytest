@@ -1,0 +1,230 @@
+name: SEC product classification audit
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  audit:
+    if: github.head_ref == 'data-capture/nasdaq-smallcap-20260803'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download validated official Nasdaq capture
+        uses: actions/download-artifact@v4
+        with:
+          name: nasdaq-smallcap-official-4c1cd5bc3b8f9d9d6537ee92c8f1623074811102
+          path: official-capture
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: portyu9/qa-automation-python-pytest
+          run-id: 30871955749
+
+      - name: Build SEC-backed product controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import concurrent.futures
+          import hashlib
+          import json
+          import pathlib
+          import re
+          import threading
+          import time
+          import urllib.request
+          from datetime import datetime, timezone
+
+          OUT = pathlib.Path('sec-product-classification-audit')
+          RAW = OUT / 'submissions'
+          RAW.mkdir(parents=True, exist_ok=True)
+          USER_AGENT = 'FrameworkV2DataAudit portyu9@users.noreply.github.com'
+          HEADERS = {'User-Agent': USER_AGENT, 'Accept-Encoding': 'gzip, deflate', 'Host': 'data.sec.gov'}
+          SEC_EXCLUSION_SICS = {
+              '6726': 'INVESTMENT_OFFICES_CLOSED_END_OR_BDC',
+              '6770': 'BLANK_CHECK_COMPANY',
+          }
+          INVESTMENT_FORMS = {'N-2','N-2/A','N-CSR','N-CSRS','N-CEN','N-54A','N-54C','N-PX','NPORT-P','NPORT-EX'}
+
+          def parse_number(value):
+              if value is None: return None
+              text = str(value).replace(',', '').replace('$', '').replace('%', '').strip()
+              if not text or text in {'--','N/A','NA','UNCH'}: return None
+              try: return float(text)
+              except ValueError: return None
+
+          def classify_name(row):
+              name = str(row.get('name') or row.get('all_listed_name') or '')
+              industry = str(row.get('industry') or '')
+              listing = str(row.get('listing_security_name') or name)
+              text = ' | '.join([name, industry, listing]).lower()
+              is_reit = bool(re.search(r'real estate investment trusts?', text))
+              is_adr = bool(re.search(r'\b(american depositar(?:y|ies)|american depositor(?:y|ies)|depositary receipt|depository receipt|\badr\b|\badss?\b)', text))
+              if re.search(r'\b(warrant|warrants)\b', text): return 'PROHIBITED_WARRANT'
+              if re.search(r'\b(right|rights)\b', text) and not re.search(r'human rights|rights management', text): return 'PROHIBITED_RIGHT'
+              if re.search(r'\b(senior notes?|subordinated notes?|junior subordinated notes?|fixed[- ]rate notes?|reset[- ]rate notes?|notes? due|debentures?|bonds?|bifurcated option note|income capital obligation notes?)\b', text): return 'PROHIBITED_DEBT_SECURITY'
+              if re.search(r'\b(tangible equity units?|corporate units?)\b', text): return 'PROHIBITED_UNIT'
+              if re.search(r'\b(unit|units)\b', text) and re.search(r'(each unit|unit consists|units, each|acquisition.*unit|blank check|option note)', text): return 'PROHIBITED_UNIT'
+              if re.search(r'\b(preferred (?:stock|shares?|units?|series|class)|preference (?:shares?|units?)|pfd|perpetual non[- ]cumulative|cumulative redeemable|trust preference securities)\b', text) or re.search(r'depositary shares.*preferred|depository shares.*preferred', text): return 'PROHIBITED_PREFERRED_SECURITY'
+              if not is_adr and re.search(r'\b(depositary|depository) shares?\b', text): return 'PROHIBITED_DEPOSITARY_OR_PREFERRED_SECURITY'
+              if re.search(r'\b(blank checks?|shell company)\b', text): return 'PROHIBITED_SPAC_OR_BLANK_CHECK'
+              if re.search(r'\b(acquisition|merger) corp(?:oration)?\b', text): return 'PROHIBITED_SPAC_OR_BLANK_CHECK'
+              if re.search(r'\bbusiness development compan|\bbdc\b', text): return 'PROHIBITED_BDC'
+              if re.search(r'\b(common units?|limited partner interests?|partnership units?)\b', text) or re.search(r'(?:\bl\.p\.|\blp\b|\blimited partnership\b|\bmaster limited partnership\b)', text): return 'PROHIBITED_PUBLIC_PARTNERSHIP_OR_LLC'
+              if re.search(r'\broyalty trust\b', text): return 'PROHIBITED_INVESTMENT_COMPANY_OR_TRUST'
+              if re.search(r'trusts except educational religious and charitable', text) and not is_reit: return 'PROHIBITED_CLOSED_END_FUND_OR_TRUST'
+              if re.search(r'\bclosed[- ]end fund\b', text): return 'PROHIBITED_CLOSED_END_FUND_OR_TRUST'
+              if re.search(r'\b(fund|portfolio|shares? of beneficial interest|cmn shs of bi|capital trust|credit opportunities|corporate investors|tax free income)\b', text) and not is_reit: return 'PROHIBITED_CLOSED_END_FUND_OR_TRUST'
+              if re.search(r'\binvestment company\b', text) and not re.search(r'investment company act compliance|software', text): return 'PROHIBITED_INVESTMENT_COMPANY_OR_TRUST'
+              if re.search(r'\btrust\b', text) and re.search(r'finance|investment|municipal|income|credit|healthcare|health sciences|life sciences|beneficial|utility|small[- ]cap|enhanced|infrastructure', text) and not is_reit and not re.search(r'\b(bank|bancorp|bankshares)\b', text): return 'PROHIBITED_CLOSED_END_FUND_OR_TRUST'
+              if is_adr: return 'COMMON_STOCK_CANDIDATE_ADR_RETAINED'
+              if re.search(r'\b(subordinate voting shares?|ordinary shares?|common(?: stock| shares?)?|class [abc](?: common)? shares?)\b', text): return 'COMMON_STOCK_CANDIDATE'
+              if is_reit: return 'COMMON_STOCK_CANDIDATE_REIT'
+              if re.search(r'\bwhen issued\b|\b(llc|limited liability company)\b', text): return 'IDENTITY_REVIEW'
+              if re.search(r'\b(inc\.?|incorporated|corporation|corp\.?|ltd\.?|limited|plc|s\.a\.?|bancorp|holdings?|pharmaceuticals?|resources?|energy|financial|commerce)\b', text): return 'COMMON_STOCK_CANDIDATE_GENERIC_OPERATING_ISSUER'
+              return 'IDENTITY_REVIEW'
+
+          files = list(pathlib.Path('official-capture').rglob('nasdaq-all-listed-official.json'))
+          enriched_files = list(pathlib.Path('official-capture').rglob('nasdaq-smallcap-enriched.json'))
+          if len(files) != 1 or len(enriched_files) != 1: raise SystemExit('official artifact files not unique')
+          all_payload = json.loads(files[0].read_bytes())
+          all_rows = (all_payload.get('data') or {}).get('rows') or []
+          exact_rows = json.loads(enriched_files[0].read_bytes())
+
+          exact_symbols = {str(r.get('symbol') or '').strip().upper() for r in exact_rows}
+          broad = {}
+          for row in all_rows:
+              symbol = str(row.get('symbol') or '').strip().upper()
+              cap = parse_number(row.get('marketCap'))
+              pct = parse_number(row.get('pctchange'))
+              cutoff_cap = None
+              if cap is not None and pct is not None and 1 + pct/100 > 0:
+                  cutoff_cap = cap/(1+pct/100)
+              if symbol in exact_symbols or (cap is not None and 250_000_000 <= cap <= 2_500_000_000) or (cutoff_cap is not None and 250_000_000 <= cutoff_cap <= 2_500_000_000):
+                  broad[symbol] = {'symbol':symbol,'name':row.get('name'),'marketCap':cap,'pctchange':pct,'derived_cutoff_cap':cutoff_cap,'country':row.get('country'),'industry':row.get('industry')}
+          for row in exact_rows:
+              symbol = str(row.get('symbol') or '').strip().upper()
+              broad.setdefault(symbol, {}).update({
+                  'symbol':symbol,'name':row.get('name'),'marketCap':parse_number(row.get('marketCap_numeric') or row.get('marketCap')),
+                  'country':row.get('country'),'industry':row.get('industry'),'listing_security_name':row.get('listing_security_name'),
+                  'exchange':row.get('exchange'),
+              })
+
+          mapping_url = 'https://www.sec.gov/files/company_tickers_exchange.json'
+          req = urllib.request.Request(mapping_url, headers={'User-Agent':USER_AGENT})
+          with urllib.request.urlopen(req, timeout=60) as response: mapping_raw = response.read()
+          mapping = json.loads(mapping_raw)
+          fields = mapping.get('fields') or []
+          ticker_map = {}
+          for values in mapping.get('data') or []:
+              row = dict(zip(fields, values))
+              ticker = str(row.get('ticker') or '').strip().upper()
+              if ticker: ticker_map[ticker] = row
+
+          aliases = lambda s: [s, s.replace('/','-'), s.replace('.','-'), s.replace('^','-')]
+          candidate_rows = []
+          for symbol,row in sorted(broad.items()):
+              mapped = None
+              for alias in aliases(symbol):
+                  if alias in ticker_map:
+                      mapped = ticker_map[alias]; break
+              out = dict(row)
+              out['name_classification'] = classify_name(row)
+              out['sec_mapping'] = mapped
+              candidate_rows.append(out)
+
+          lock = threading.Lock()
+          last_request = [0.0]
+          def throttle():
+              with lock:
+                  wait = 0.12 - (time.monotonic()-last_request[0])
+                  if wait > 0: time.sleep(wait)
+                  last_request[0] = time.monotonic()
+
+          def fetch_submission(cik):
+              cik10 = f'{int(cik):010d}'
+              url = f'https://data.sec.gov/submissions/CIK{cik10}.json'
+              for retry in range(4):
+                  try:
+                      throttle()
+                      req = urllib.request.Request(url, headers=HEADERS)
+                      with urllib.request.urlopen(req, timeout=45) as response: raw = response.read()
+                      payload = json.loads(raw)
+                      (RAW/f'CIK{cik10}.json').write_bytes(raw)
+                      return {'cik':int(cik),'url':url,'raw_sha256':hashlib.sha256(raw).hexdigest(),'payload':payload}
+                  except Exception as exc:
+                      if retry == 3: return {'cik':int(cik),'url':url,'error':f'{type(exc).__name__}: {exc}'}
+                      time.sleep(0.5*(2**retry))
+
+          ciks = sorted({r['sec_mapping']['cik'] for r in candidate_rows if r.get('sec_mapping') and r['sec_mapping'].get('cik') is not None})
+          submissions = {}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+              for i,result in enumerate(pool.map(fetch_submission,ciks),1):
+                  submissions[result['cik']] = result
+                  if i % 100 == 0: print(f'SEC submissions {i}/{len(ciks)}', flush=True)
+
+          controls=[]
+          for row in candidate_rows:
+              mapped=row.get('sec_mapping')
+              sub=submissions.get(mapped.get('cik')) if mapped else None
+              payload=(sub or {}).get('payload') or {}
+              recent=((payload.get('filings') or {}).get('recent') or {})
+              forms=set(str(x) for x in recent.get('form') or [])
+              sic=str(payload.get('sic') or '').strip()
+              sic_desc=str(payload.get('sicDescription') or '').strip()
+              investment_forms=sorted(forms & INVESTMENT_FORMS)
+              sec_reason=None
+              if sic in SEC_EXCLUSION_SICS: sec_reason=SEC_EXCLUSION_SICS[sic]
+              elif investment_forms: sec_reason='INVESTMENT_COMPANY_FORMS:' + ','.join(investment_forms)
+              final='PROHIBITED_SEC_INVESTMENT_OR_BLANK_CHECK' if sec_reason else row['name_classification']
+              controls.append({
+                  **row,
+                  'sec_cik':mapped.get('cik') if mapped else None,
+                  'sec_title':payload.get('name') or (mapped.get('name') if mapped else None),
+                  'sec_sic':sic or None,'sec_sic_description':sic_desc or None,
+                  'sec_recent_investment_forms':investment_forms,
+                  'sec_exclusion_reason':sec_reason,
+                  'sec_submission_sha256':(sub or {}).get('raw_sha256'),
+                  'sec_submission_error':(sub or {}).get('error'),
+                  'final_product_control':final,
+              })
+
+          summary={
+              'record_type':'Framework_v2_R38_SEC_product_classification_audit',
+              'captured_at_utc':datetime.now(timezone.utc).isoformat(),
+              'candidate_symbol_count':len(candidate_rows),
+              'mapped_symbol_count':sum(bool(r.get('sec_mapping')) for r in candidate_rows),
+              'unmapped_symbol_count':sum(not r.get('sec_mapping') for r in candidate_rows),
+              'unique_cik_count':len(ciks),
+              'submission_success_count':sum('payload' in r for r in submissions.values()),
+              'submission_failure_count':sum('error' in r for r in submissions.values()),
+              'sec_excluded_count':sum(bool(r.get('sec_exclusion_reason')) for r in controls),
+              'name_prohibited_count':sum(str(r.get('name_classification')).startswith('PROHIBITED_') for r in controls),
+              'final_prohibited_count':sum(str(r.get('final_product_control')).startswith('PROHIBITED_') for r in controls),
+              'final_review_count':sum(str(r.get('final_product_control')).startswith('IDENTITY_REVIEW') for r in controls),
+              'mapping_raw_sha256':hashlib.sha256(mapping_raw).hexdigest(),
+          }
+          (OUT/'product-controls.jsonl').write_text(''.join(json.dumps(r,sort_keys=True)+'\n' for r in controls),encoding='utf-8')
+          (OUT/'unmapped.jsonl').write_text(''.join(json.dumps(r,sort_keys=True)+'\n' for r in controls if not r.get('sec_mapping')),encoding='utf-8')
+          (OUT/'sec-exclusions.jsonl').write_text(''.join(json.dumps(r,sort_keys=True)+'\n' for r in controls if r.get('sec_exclusion_reason')),encoding='utf-8')
+          (OUT/'review.jsonl').write_text(''.join(json.dumps(r,sort_keys=True)+'\n' for r in controls if str(r.get('final_product_control')).startswith('IDENTITY_REVIEW')),encoding='utf-8')
+          (OUT/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps(summary,indent=2,sort_keys=True))
+          if summary['submission_failure_count']:
+              raise SystemExit('SEC submission failures remain')
+          PY
+
+      - name: Upload SEC product audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: sec-product-classification-audit-${{ github.event.pull_request.head.sha }}
+          path: sec-product-classification-audit/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
