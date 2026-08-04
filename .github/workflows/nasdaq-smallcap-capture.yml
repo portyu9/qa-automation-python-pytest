@@ -23,7 +23,9 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
+          import csv
           import hashlib
+          import io
           import json
           import pathlib
           import urllib.request
@@ -31,6 +33,8 @@ jobs:
 
           FILTERED_URL = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&marketcap=small"
           ALL_LISTED_URL = "https://api.nasdaq.com/api/screener/stocks?download=true&tableonly=true"
+          NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+          OTHER_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
           HEADERS = {
               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0 Safari/537.36",
               "Accept": "application/json, text/plain, */*",
@@ -38,6 +42,16 @@ jobs:
               "Origin": "https://www.nasdaq.com",
               "Referer": "https://www.nasdaq.com/market-activity/stocks/screener",
           }
+
+          def fetch_bytes(url: str):
+              request = urllib.request.Request(url, headers=HEADERS)
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  raw = response.read()
+                  status = response.status
+                  headers = dict(response.headers.items())
+              if status != 200:
+                  raise SystemExit(f"HTTP {status} for {url}")
+              return raw, headers
 
           def extract_rows(payload: dict):
               data = payload.get("data") or {}
@@ -70,25 +84,52 @@ jobs:
               except ValueError:
                   return None
 
-          def fetch(url: str):
-              request = urllib.request.Request(url, headers=HEADERS)
-              with urllib.request.urlopen(request, timeout=60) as response:
-                  raw = response.read()
-                  status = response.status
-                  headers = dict(response.headers.items())
-              if status != 200:
-                  raise SystemExit(f"Nasdaq returned HTTP {status} for {url}")
+          def fetch_json(url: str):
+              raw, headers = fetch_bytes(url)
               payload = json.loads(raw)
               rows, total, shape = extract_rows(payload)
-              return raw, headers, payload, rows, total, shape
+              return raw, headers, rows, total, shape
 
-          filtered_raw, filtered_headers, filtered_payload, filtered_rows, filtered_total, filtered_shape = fetch(FILTERED_URL)
-          all_raw, all_headers, all_payload, all_rows, all_total, all_shape = fetch(ALL_LISTED_URL)
+          def parse_pipe_file(raw: bytes):
+              text = raw.decode("utf-8-sig", errors="replace")
+              lines = [line for line in text.splitlines() if line and not line.startswith("File Creation Time")]
+              return list(csv.DictReader(io.StringIO("\n".join(lines)), delimiter="|"))
+
+          filtered_raw, filtered_headers, filtered_rows, filtered_total, filtered_shape = fetch_json(FILTERED_URL)
+          all_raw, all_headers, all_rows, all_total, all_shape = fetch_json(ALL_LISTED_URL)
+          nasdaq_dir_raw, nasdaq_dir_headers = fetch_bytes(NASDAQ_LISTED_URL)
+          other_dir_raw, other_dir_headers = fetch_bytes(OTHER_LISTED_URL)
+          nasdaq_directory = parse_pipe_file(nasdaq_dir_raw)
+          other_directory = parse_pipe_file(other_dir_raw)
 
           if not isinstance(filtered_rows, list) or not (500 <= len(filtered_rows) <= 5000):
               raise SystemExit(f"Unexpected filtered row count: {len(filtered_rows) if isinstance(filtered_rows, list) else 'non-list'}; shape={filtered_shape}")
           if not isinstance(all_rows, list) or len(all_rows) < 4000:
               raise SystemExit(f"Unexpected all-listed row count: {len(all_rows) if isinstance(all_rows, list) else 'non-list'}; shape={all_shape}")
+          if len(nasdaq_directory) < 2000 or len(other_directory) < 2000:
+              raise SystemExit(f"Unexpected symbol-directory sizes: nasdaq={len(nasdaq_directory)}, other={len(other_directory)}")
+
+          exchange_by_symbol = {}
+          listing_name_by_symbol = {}
+          for row in nasdaq_directory:
+              symbol = str(row.get("Symbol") or "").strip().upper()
+              if symbol:
+                  exchange_by_symbol[symbol] = "NASDAQ"
+                  listing_name_by_symbol[symbol] = str(row.get("Security Name") or "").strip()
+          exchange_code_map = {
+              "A": "NYSE AMERICAN",
+              "N": "NYSE",
+              "P": "NYSE ARCA",
+              "Z": "CBOE BZX",
+              "V": "IEX",
+          }
+          for row in other_directory:
+              exchange = exchange_code_map.get(str(row.get("Exchange") or "").strip().upper(), str(row.get("Exchange") or "").strip().upper())
+              for key in ("ACT Symbol", "NASDAQ Symbol", "CQS Symbol"):
+                  symbol = str(row.get(key) or "").strip().upper()
+                  if symbol:
+                      exchange_by_symbol[symbol] = exchange
+                      listing_name_by_symbol[symbol] = str(row.get("Security Name") or "").strip()
 
           required_filtered = {"symbol", "name", "lastsale", "marketCap"}
           malformed = []
@@ -123,11 +164,15 @@ jobs:
 
           enriched_rows = []
           missing_from_all = []
+          missing_exchange = []
           for row in filtered_rows:
               symbol = str(row.get("symbol") or "").strip().upper()
               all_row = all_by_symbol.get(symbol)
               if all_row is None:
                   missing_from_all.append(symbol)
+              exchange = exchange_by_symbol.get(symbol, "")
+              if not exchange:
+                  missing_exchange.append(symbol)
               enriched = dict(row)
               enriched["symbol"] = symbol
               enriched["marketCap_numeric"] = parse_number(row.get("marketCap"))
@@ -135,6 +180,8 @@ jobs:
               enriched["country"] = (all_row or {}).get("country")
               enriched["industry"] = (all_row or {}).get("industry")
               enriched["sector"] = (all_row or {}).get("sector")
+              enriched["exchange"] = exchange
+              enriched["listing_security_name"] = listing_name_by_symbol.get(symbol, "")
               enriched["all_listed_name"] = (all_row or {}).get("name")
               enriched["all_listed_marketCap"] = (all_row or {}).get("marketCap")
               enriched_rows.append(enriched)
@@ -143,18 +190,20 @@ jobs:
               raise SystemExit(f"Filtered symbols absent from all-listed response: {len(missing_from_all)}; sample={missing_from_all[:20]}")
 
           joined_country_rows = sum(1 for row in enriched_rows if row.get("country"))
-          foreign_country_rows = sum(
-              1 for row in enriched_rows
-              if row.get("country") and row.get("country") != "United States"
-          )
+          foreign_country_rows = sum(1 for row in enriched_rows if row.get("country") and row.get("country") != "United States")
+          exchange_joined_rows = sum(1 for row in enriched_rows if row.get("exchange"))
           if joined_country_rows < int(len(enriched_rows) * 0.90):
               raise SystemExit(f"Country join coverage too low: {joined_country_rows}/{len(enriched_rows)}")
           if foreign_country_rows < 10:
               raise SystemExit(f"Foreign/ADR coverage unexpectedly low: {foreign_country_rows}")
+          if exchange_joined_rows < int(len(enriched_rows) * 0.98):
+              raise SystemExit(f"Exchange join coverage too low: {exchange_joined_rows}/{len(enriched_rows)}; sample={missing_exchange[:20]}")
 
           captured_at = datetime.now(timezone.utc).isoformat()
           filtered_digest = hashlib.sha256(filtered_raw).hexdigest()
           all_digest = hashlib.sha256(all_raw).hexdigest()
+          nasdaq_dir_digest = hashlib.sha256(nasdaq_dir_raw).hexdigest()
+          other_dir_digest = hashlib.sha256(other_dir_raw).hexdigest()
           normalized_bytes = (json.dumps(enriched_rows, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
           normalized_digest = hashlib.sha256(normalized_bytes).hexdigest()
 
@@ -162,39 +211,47 @@ jobs:
           target.mkdir(parents=True, exist_ok=True)
           (target / "nasdaq-smallcap-official.json").write_bytes(filtered_raw)
           (target / "nasdaq-all-listed-official.json").write_bytes(all_raw)
+          (target / "nasdaqlisted.txt").write_bytes(nasdaq_dir_raw)
+          (target / "otherlisted.txt").write_bytes(other_dir_raw)
           (target / "nasdaq-smallcap-enriched.json").write_bytes(normalized_bytes)
 
           metadata = {
-              "source": "Nasdaq official screener",
+              "source": "Nasdaq official screener plus Nasdaq Trader symbol directories",
               "filtered_url": FILTERED_URL,
               "all_listed_url": ALL_LISTED_URL,
+              "nasdaq_listed_url": NASDAQ_LISTED_URL,
+              "other_listed_url": OTHER_LISTED_URL,
               "captured_at_utc": captured_at,
               "filtered_response_shape": filtered_shape,
               "all_listed_response_shape": all_shape,
-              "filtered_response_headers": filtered_headers,
-              "all_listed_response_headers": all_headers,
               "filtered_raw_sha256": filtered_digest,
               "all_listed_raw_sha256": all_digest,
+              "nasdaq_listed_raw_sha256": nasdaq_dir_digest,
+              "other_listed_raw_sha256": other_dir_digest,
               "normalized_enriched_sha256": normalized_digest,
               "filtered_row_count": len(filtered_rows),
               "filtered_reported_totalrecords": filtered_total,
               "all_listed_row_count": len(all_rows),
               "all_listed_reported_totalrecords": all_total,
+              "nasdaq_directory_rows": len(nasdaq_directory),
+              "other_directory_rows": len(other_directory),
               "country_joined_rows": joined_country_rows,
               "foreign_country_rows": foreign_country_rows,
               "blank_country_rows": len(enriched_rows) - joined_country_rows,
+              "exchange_joined_rows": exchange_joined_rows,
+              "blank_exchange_rows": len(missing_exchange),
+              "missing_exchange_symbols": missing_exchange,
               "duplicate_symbols": duplicate_symbols,
               "out_of_band_rows": out_of_band,
               "missing_from_all_listed": missing_from_all,
               "schema_required_filtered_fields": sorted(required_filtered),
           }
-          (target / "capture-metadata.json").write_text(
-              json.dumps(metadata, indent=2, sort_keys=True) + "\n",
-              encoding="utf-8",
-          )
+          (target / "capture-metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           (target / "SHA256SUMS").write_text(
               f"{filtered_digest}  nasdaq-smallcap-official.json\n"
               f"{all_digest}  nasdaq-all-listed-official.json\n"
+              f"{nasdaq_dir_digest}  nasdaqlisted.txt\n"
+              f"{other_dir_digest}  otherlisted.txt\n"
               f"{normalized_digest}  nasdaq-smallcap-enriched.json\n",
               encoding="utf-8",
           )
