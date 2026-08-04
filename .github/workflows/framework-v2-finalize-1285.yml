@@ -1,0 +1,79 @@
+name: Framework v2 finalize 1285 common-stock population
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  finalize:
+    if: github.head_ref == 'data-capture/nasdaq-smallcap-20260803'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: data-capture/nasdaq-smallcap-20260803
+          fetch-depth: 0
+      - name: Download corrected 1286 Pass 2
+        uses: actions/download-artifact@v4
+        with:
+          name: framework-v2-pass2-corrected-merge-bb640fed044a79c4efae5a6261725920b57f7034
+          path: inputs/pass2
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: portyu9/qa-automation-python-pytest
+          run-id: 30913628200
+      - name: Download completed 68-symbol Pass 3
+        uses: actions/download-artifact@v4
+        with:
+          name: framework-v2-pass3-sec-audit-a3e02b77c87ccb8e3c41faeeaa24b5b45c821b53
+          path: inputs/pass3
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: portyu9/qa-automation-python-pytest
+          run-id: 30910850076
+      - name: Build and bind 1285/67 corrected artifacts
+        shell: bash
+        run: |
+          python - <<'PY'
+          import copy,hashlib,json,pathlib,shutil
+          O=pathlib.Path('framework-v2-final-1285');O.mkdir(exist_ok=True)
+          def jl(p):return [json.loads(x) for x in pathlib.Path(p).read_text().splitlines() if x.strip()]
+          pop_path=pathlib.Path('scan-inputs/frozen-population-20260731.json');old=json.loads(pop_path.read_text())
+          if old.get('population_count')!=1286 or old.get('population_sha256')!='1da404551660dc9e91c382d451712f0b44471adaf11d7b278072d5c3b2094b17' or 'PSNYW' not in old.get('symbols',[]):raise SystemExit('unexpected 1286 source population')
+          symbols=sorted(set(old['symbols'])-{'PSNYW'});sym_bytes=('\n'.join(symbols)+'\n').encode();pop_sha=hashlib.sha256(sym_bytes).hexdigest()
+          if len(symbols)!=1285 or pop_sha!='4fd01e75330a2b4df7bbdec18c01019c85999541af3e569d884bee9a0cedaa49':raise SystemExit('1285 population hash mismatch')
+          pop=copy.deepcopy(old);pop['record_type']='Framework_v2_R38_frozen_population_common_stock_only_v2';pop['population_count']=1285;pop['population_sha256']=pop_sha;pop['symbols']=symbols;pop['supersedes_population_count']=1286;pop['supersedes_population_sha256']=old['population_sha256'];pop.setdefault('corrections',[]).append({'symbol':'PSNYW','action':'REMOVE','reason':'Nasdaq Class C-1 ADS (ADW) has exercise and redemption economics and is not common stock under the universe contract.'})
+          pop_bytes=(json.dumps(pop,indent=2,sort_keys=True)+'\n').encode();pop_path.write_bytes(pop_bytes);(O/'frozen-population-20260731.json').write_bytes(pop_bytes)
+          p2s=json.loads(pathlib.Path('inputs/pass2/summary.json').read_text());metrics=jl('inputs/pass2/pass2-metrics.jsonl');quals=jl('inputs/pass2/mechanical-qualifiers.jsonl');near=jl('inputs/pass2/near-qualifiers.jsonl');limited=jl('inputs/pass2/limited-history.jsonl')
+          if p2s.get('population_count')!=1286 or len(metrics)!=1286 or len(quals)!=68 or not any(x['symbol']=='PSNYW' for x in metrics) or not any(x['symbol']=='PSNYW' for x in quals):raise SystemExit('unexpected Pass2 source contract')
+          metrics=[x for x in metrics if x['symbol']!='PSNYW'];quals=[x for x in quals if x['symbol']!='PSNYW'];near=[x for x in near if x['symbol']!='PSNYW'];limited=[x for x in limited if x['symbol']!='PSNYW']
+          if {x['symbol'] for x in metrics}!=set(symbols) or len(metrics)!=1285 or len(quals)!=67:raise SystemExit('Pass2 1285 set mismatch')
+          P2=O/'pass2';P2.mkdir()
+          def write(p,rows):p.write_text(''.join(json.dumps(x,sort_keys=True,separators=(',',':'))+'\n' for x in rows))
+          write(P2/'pass2-metrics.jsonl',metrics);write(P2/'mechanical-qualifiers.jsonl',quals);write(P2/'near-qualifiers.jsonl',near);write(P2/'limited-history.jsonl',limited);write(P2/'failures.jsonl',[])
+          mb=(P2/'pass2-metrics.jsonl').read_bytes();qb=(P2/'mechanical-qualifiers.jsonl').read_bytes();p2summary=copy.deepcopy(p2s);p2summary.update({'record_type':'Framework_v2_R38_pass2_common_stock_only_v2','population_count':1285,'population_sha256':pop_sha,'success_count':1285,'failure_count':0,'mechanical_qualifier_count':67,'near_qualifier_count':len(near),'limited_history_count':len(limited),'full_52week_coverage_count':1285-len(limited),'metrics_sha256':hashlib.sha256(mb).hexdigest(),'qualifiers_sha256':hashlib.sha256(qb).hexdigest(),'supersedes_population_count':1286,'removed_non_common_symbol':'PSNYW','complete':True});(P2/'summary.json').write_text(json.dumps(p2summary,indent=2,sort_keys=True)+'\n')
+          p3s=json.loads(pathlib.Path('inputs/pass3/summary.json').read_text());audit=jl('inputs/pass3/pass3-sec-audit.jsonl')
+          if len(audit)!=68 or {x['symbol'] for x in audit}!={x['symbol'] for x in jl('inputs/pass2/mechanical-qualifiers.jsonl')}:raise SystemExit('Pass3 source symbol mismatch')
+          P3=O/'pass3';P3.mkdir();audit=[x for x in audit if x['symbol']!='PSNYW'];qset={x['symbol'] for x in quals}
+          if len(audit)!=67 or {x['symbol'] for x in audit}!=qset:raise SystemExit('Pass3 67-symbol binding mismatch')
+          for source_name in ['auto-hard-veto.jsonl','financing-risk.jsonl','reverse-split-risk.jsonl','accounting-risk.jsonl']:
+            rows=[x for x in jl(pathlib.Path('inputs/pass3')/source_name) if x['symbol']!='PSNYW'];write(P3/source_name,rows)
+          write(P3/'pass3-sec-audit.jsonl',audit);shutil.copy2('inputs/pass3/evidence-hits.jsonl',P3/'evidence-hits-source68.jsonl');shutil.copy2('inputs/pass3/document-failures.jsonl',P3/'document-failures.jsonl')
+          ab=(P3/'pass3-sec-audit.jsonl').read_bytes();veto=jl(P3/'auto-hard-veto.jsonl');binding={'record_type':'Framework_v2_R38_pass3_common_stock_only_binding_v2','scan_id':p2s.get('scan_id'),'revision_id':p2s.get('revision_id'),'information_cutoff':p3s.get('information_cutoff'),'population_count':1285,'population_sha256':pop_sha,'pass2_metrics_sha256':p2summary['metrics_sha256'],'pass2_qualifier_count':67,'pass2_qualifiers_sha256':p2summary['qualifiers_sha256'],'pass3_audited_symbol_count':67,'pass3_audit_sha256':hashlib.sha256(ab).hexdigest(),'raw_source_audit_sha256':p3s.get('audit_sha256'),'keyword_auto_veto_count_before_context_review':len(veto),'complete':True};(P3/'binding-summary.json').write_text(json.dumps(binding,indent=2,sort_keys=True)+'\n')
+          top={'population_count':1285,'population_sha256':pop_sha,'population_artifact_sha256':hashlib.sha256(pop_bytes).hexdigest(),'pass2_success_count':1285,'pass2_qualifier_count':67,'pass2_metrics_sha256':p2summary['metrics_sha256'],'pass2_qualifiers_sha256':p2summary['qualifiers_sha256'],'pass3_audited_count':67,'pass3_audit_sha256':binding['pass3_audit_sha256'],'removed_symbol':'PSNYW','complete':True};(O/'summary.json').write_text(json.dumps(top,indent=2,sort_keys=True)+'\n');print(json.dumps(top,indent=2,sort_keys=True))
+          PY
+      - name: Persist corrected frozen input on isolated branch
+        shell: bash
+        run: |
+          if git diff --quiet -- scan-inputs/frozen-population-20260731.json; then exit 0; fi
+          git config user.name framework-v2-population-fix
+          git config user.email framework-v2-population-fix@users.noreply.github.com
+          git add scan-inputs/frozen-population-20260731.json
+          git commit -m 'fix: remove PSNYW non-common instrument from frozen population'
+          git push origin HEAD:data-capture/nasdaq-smallcap-20260803
+      - uses: actions/upload-artifact@v4
+        with:
+          name: framework-v2-final-1285-${{ github.event.pull_request.head.sha }}
+          path: framework-v2-final-1285/
+          retention-days: 7
