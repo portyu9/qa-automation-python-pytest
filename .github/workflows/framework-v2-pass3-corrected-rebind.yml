@@ -1,0 +1,74 @@
+name: Framework v2 corrected Pass 3 rebind
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  rebind:
+    if: github.head_ref == 'data-capture/nasdaq-smallcap-20260803'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download corrected Pass 2
+        uses: actions/download-artifact@v4
+        with:
+          name: framework-v2-pass2-corrected-merge-bb640fed044a79c4efae5a6261725920b57f7034
+          path: inputs/pass2
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: portyu9/qa-automation-python-pytest
+          run-id: 30913628200
+      - name: Download completed Pass 3 SEC audit
+        uses: actions/download-artifact@v4
+        with:
+          name: framework-v2-pass3-sec-audit-a3e02b77c87ccb8e3c41faeeaa24b5b45c821b53
+          path: inputs/pass3
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: portyu9/qa-automation-python-pytest
+          run-id: 30910850076
+      - name: Validate and rebind immutable audit
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib,json,pathlib,shutil
+          P2=pathlib.Path('inputs/pass2');P3=pathlib.Path('inputs/pass3');O=pathlib.Path('framework-v2-pass3-corrected');O.mkdir(exist_ok=True)
+          def jl(p):return [json.loads(x) for x in pathlib.Path(p).read_text().splitlines() if x.strip()]
+          s2=json.loads((P2/'summary.json').read_text());s3=json.loads((P3/'summary.json').read_text())
+          qbytes=(P2/'mechanical-qualifiers.jsonl').read_bytes();q=jl(P2/'mechanical-qualifiers.jsonl');a=jl(P3/'pass3-sec-audit.jsonl')
+          qset={x['symbol'] for x in q};aset={x['symbol'] for x in a}
+          checks={
+            'corrected_population_count':s2.get('population_count')==1286,
+            'corrected_population_sha':s2.get('population_sha256')=='1da404551660dc9e91c382d451712f0b44471adaf11d7b278072d5c3b2094b17',
+            'pass2_complete':s2.get('complete') is True and s2.get('failure_count')==0 and s2.get('success_count')==1286,
+            'qualifier_count':len(q)==68 and s2.get('mechanical_qualifier_count')==68,
+            'qualifier_file_sha':hashlib.sha256(qbytes).hexdigest()=='3f0978bc29a79e76aacb5da95732c595dd386b7079a059c8006602bb3981c33f',
+            'pass3_complete':s3.get('complete') is True and s3.get('document_failure_count')==0 and len(a)==68,
+            'pass3_audit_sha':hashlib.sha256((P3/'pass3-sec-audit.jsonl').read_bytes()).hexdigest()=='37c2c7194360aa5c5410e8b057044aacb7789bc96218c51306122e7e51550479',
+            'symbol_sets_equal':qset==aset,
+          }
+          if not all(checks.values()):raise SystemExit(f'rebind validation failed: {checks}; missing={sorted(qset-aset)} extra={sorted(aset-qset)}')
+          for name in ['pass3-sec-audit.jsonl','auto-hard-veto.jsonl','financing-risk.jsonl','reverse-split-risk.jsonl','accounting-risk.jsonl','evidence-hits.jsonl','document-failures.jsonl']:
+            shutil.copy2(P3/name,O/name)
+          audit_bytes=(O/'pass3-sec-audit.jsonl').read_bytes();veto=jl(O/'auto-hard-veto.jsonl')
+          summary={
+            'record_type':'Framework_v2_R38_pass3_corrected_population_binding',
+            'scan_id':s2.get('scan_id'),'revision_id':s2.get('revision_id'),'information_cutoff':s3.get('information_cutoff'),
+            'population_count':1286,'population_sha256':s2.get('population_sha256'),'pass2_metrics_sha256':s2.get('metrics_sha256'),
+            'pass2_qualifier_count':68,'pass2_qualifiers_sha256':hashlib.sha256(qbytes).hexdigest(),
+            'pass3_audited_symbol_count':68,'pass3_audit_sha256':hashlib.sha256(audit_bytes).hexdigest(),
+            'auto_hard_veto_count':len(veto),'provisional_non_veto_count':68-len(veto),
+            'source_pass3_run_id':30910850076,'source_pass3_artifact_id':8893140115,
+            'checks':checks,'complete':True,
+          }
+          (O/'binding-summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          (O/'audited-symbols.txt').write_text('\n'.join(sorted(aset))+'\n')
+          print(json.dumps(summary,indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: framework-v2-pass3-corrected-${{ github.event.pull_request.head.sha }}
+          path: framework-v2-pass3-corrected/
+          retention-days: 7
