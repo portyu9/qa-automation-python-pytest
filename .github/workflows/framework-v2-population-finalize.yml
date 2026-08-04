@@ -1,0 +1,55 @@
+name: Framework v2 population finalization
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  finalize:
+    if: github.head_ref == 'data-capture/nasdaq-smallcap-20260803'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build corrected frozen population
+        shell: bash
+        run: |
+          python - <<'PY'
+          import copy,hashlib,json,pathlib
+          src=pathlib.Path('scan-inputs/frozen-population-20260731.json')
+          raw=src.read_bytes(); old=json.loads(raw)
+          assert old.get('population_count')==1283
+          additions=['BXDC','IRS','OPI']
+          symbols=sorted(set(old['symbols'])|set(additions))
+          assert len(symbols)==1286
+          symbol_bytes=('\n'.join(symbols)+'\n').encode()
+          out=copy.deepcopy(old)
+          out['record_type']='Framework_v2_R38_frozen_population_pass2_input_corrected'
+          out['population_count']=len(symbols)
+          out['symbols']=symbols
+          out['population_sha256']=hashlib.sha256(symbol_bytes).hexdigest()
+          out['population_hash_contract']='SHA256_UTF8_SORTED_SYMBOLS_ONE_PER_LINE_WITH_FINAL_NEWLINE'
+          out['supersedes_population_count']=old.get('population_count')
+          out['supersedes_population_sha256']=old.get('population_sha256')
+          out['corrections']=[
+            {'symbol':'BXDC','action':'ADD','reason':'NYSE common stock; official Nasdaq July 31 price bridge market cap $1,820,875,103.60; SEC S-11/424B4 identifies REIT common stock.'},
+            {'symbol':'IRS','action':'ADD','reason':'NYSE global depositary shares representing common stock; official Nasdaq July 31 price bridge market cap $1,231,600,825.52.'},
+            {'symbol':'OPI','action':'ADD','reason':'Nasdaq reorganized common shares of beneficial interest; emerged from Chapter 11 June 17, 2026; official Nasdaq July 31 price bridge market cap $1,801,861,506.61.'},
+          ]
+          out['explicit_split_distortion_exclusions']=[
+            {'symbol':'MVIS','reason':'1-for-15 reverse split effective August 1, trading adjusted August 3; July 31 unadjusted market cap approximately $93.2M, below band.'},
+            {'symbol':'PMI','reason':'1-for-50 reverse split effective after July 31 close; July 31 unadjusted market cap approximately $9.03M, below band.'},
+            {'symbol':'WETO','reason':'current screener share-count/price basis mismatch; official unadjusted July 31 bridge market cap approximately $7.39M, below band.'},
+          ]
+          outdir=pathlib.Path('population-finalization');outdir.mkdir(exist_ok=True)
+          data=(json.dumps(out,indent=2,sort_keys=True)+'\n').encode()
+          (outdir/'frozen-population-20260731-corrected.json').write_bytes(data)
+          summary={'old_count':1283,'new_count':1286,'added_symbols':additions,'symbol_set_sha256':out['population_sha256'],'artifact_sha256':hashlib.sha256(data).hexdigest(),'old_raw_sha256':hashlib.sha256(raw).hexdigest(),'complete':True}
+          (outdir/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(summary,indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: framework-v2-frozen-population-corrected-${{ github.event.pull_request.head.sha }}
+          path: population-finalization/
+          retention-days: 7
