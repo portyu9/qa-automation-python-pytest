@@ -2,23 +2,23 @@ name: Nasdaq small-cap snapshot capture
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened]
     branches:
       - main
-    paths:
-      - .github/workflows/nasdaq-smallcap-capture.yml
 
 permissions:
   contents: read
 
 jobs:
   capture:
+    if: github.head_ref == 'data-capture/nasdaq-smallcap-20260803'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout capture branch
         uses: actions/checkout@v4
 
-      - name: Fetch and validate official Nasdaq small-cap snapshot
+      - name: Fetch, join, and validate official Nasdaq snapshots
         shell: bash
         run: |
           set -euo pipefail
@@ -29,79 +29,150 @@ jobs:
           import urllib.request
           from datetime import datetime, timezone
 
-          url = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&marketcap=small"
-          headers = {
+          FILTERED_URL = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&marketcap=small"
+          ALL_LISTED_URL = "https://api.nasdaq.com/api/screener/stocks?download=true&tableonly=true"
+          HEADERS = {
               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0 Safari/537.36",
               "Accept": "application/json, text/plain, */*",
               "Accept-Language": "en-US,en;q=0.9",
               "Origin": "https://www.nasdaq.com",
               "Referer": "https://www.nasdaq.com/market-activity/stocks/screener",
           }
-          request = urllib.request.Request(url, headers=headers)
-          with urllib.request.urlopen(request, timeout=45) as response:
-              raw = response.read()
-              status = response.status
-              response_headers = dict(response.headers.items())
 
-          if status != 200:
-              raise SystemExit(f"Nasdaq returned HTTP {status}")
+          def fetch(url: str):
+              request = urllib.request.Request(url, headers=HEADERS)
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  raw = response.read()
+                  status = response.status
+                  headers = dict(response.headers.items())
+              if status != 200:
+                  raise SystemExit(f"Nasdaq returned HTTP {status} for {url}")
+              payload = json.loads(raw)
+              rows = (((payload.get("data") or {}).get("table") or {}).get("rows") or [])
+              total = (payload.get("data") or {}).get("totalrecords")
+              return raw, headers, payload, rows, total
 
-          payload = json.loads(raw)
-          rows = (((payload.get("data") or {}).get("table") or {}).get("rows") or [])
-          total = (payload.get("data") or {}).get("totalrecords")
-          if not isinstance(rows, list) or len(rows) < 500:
-              raise SystemExit(f"Unexpected row count: {len(rows) if isinstance(rows, list) else 'non-list'}")
-          if len(rows) > 5000:
-              raise SystemExit(f"Unexpectedly large small-cap result: {len(rows)}")
+          filtered_raw, filtered_headers, filtered_payload, filtered_rows, filtered_total = fetch(FILTERED_URL)
+          all_raw, all_headers, all_payload, all_rows, all_total = fetch(ALL_LISTED_URL)
 
-          required = {"symbol", "name", "lastsale", "marketCap", "country"}
+          if not isinstance(filtered_rows, list) or not (500 <= len(filtered_rows) <= 5000):
+              raise SystemExit(f"Unexpected filtered row count: {len(filtered_rows) if isinstance(filtered_rows, list) else 'non-list'}")
+          if not isinstance(all_rows, list) or len(all_rows) < 4000:
+              raise SystemExit(f"Unexpected all-listed row count: {len(all_rows) if isinstance(all_rows, list) else 'non-list'}")
+
+          required_filtered = {"symbol", "name", "lastsale", "marketCap"}
           malformed = []
+          duplicate_symbols = []
           out_of_band = []
-          for index, row in enumerate(rows):
-              missing = sorted(required.difference(row))
+          seen = set()
+          for index, row in enumerate(filtered_rows):
+              missing = sorted(required_filtered.difference(row))
               if missing:
                   malformed.append({"index": index, "symbol": row.get("symbol"), "missing": missing})
+              symbol = str(row.get("symbol") or "").strip().upper()
+              if symbol in seen:
+                  duplicate_symbols.append(symbol)
+              seen.add(symbol)
               cap = row.get("marketCap")
               try:
                   cap_value = float(cap)
               except (TypeError, ValueError):
                   cap_value = None
-              if cap_value is not None and not (300_000_000 <= cap_value <= 2_000_000_000):
+              if cap_value is None or not (300_000_000 <= cap_value <= 2_000_000_000):
                   out_of_band.append({"index": index, "symbol": row.get("symbol"), "marketCap": cap})
 
           if malformed:
-              raise SystemExit(f"Malformed rows found: {malformed[:10]}")
-          if len(out_of_band) > 10:
-              raise SystemExit(f"Too many out-of-band rows: {len(out_of_band)}; sample={out_of_band[:10]}")
+              raise SystemExit(f"Malformed filtered rows found: {malformed[:10]}")
+          if duplicate_symbols:
+              raise SystemExit(f"Duplicate filtered symbols found: {duplicate_symbols[:20]}")
+          if out_of_band:
+              raise SystemExit(f"Out-of-band filtered rows found: {len(out_of_band)}; sample={out_of_band[:10]}")
+
+          all_by_symbol = {}
+          for row in all_rows:
+              symbol = str(row.get("symbol") or "").strip().upper()
+              if symbol and symbol not in all_by_symbol:
+                  all_by_symbol[symbol] = row
+
+          enriched_rows = []
+          missing_from_all = []
+          for row in filtered_rows:
+              symbol = str(row.get("symbol") or "").strip().upper()
+              all_row = all_by_symbol.get(symbol)
+              if all_row is None:
+                  missing_from_all.append(symbol)
+              enriched = dict(row)
+              enriched["symbol"] = symbol
+              enriched["country"] = (all_row or {}).get("country")
+              enriched["all_listed_name"] = (all_row or {}).get("name")
+              enriched["all_listed_marketCap"] = (all_row or {}).get("marketCap")
+              enriched_rows.append(enriched)
+
+          if missing_from_all:
+              raise SystemExit(f"Filtered symbols absent from all-listed response: {len(missing_from_all)}; sample={missing_from_all[:20]}")
+
+          joined_country_rows = sum(1 for row in enriched_rows if row.get("country"))
+          foreign_country_rows = sum(
+              1 for row in enriched_rows
+              if row.get("country") and row.get("country") != "United States"
+          )
+          if joined_country_rows < int(len(enriched_rows) * 0.90):
+              raise SystemExit(f"Country join coverage too low: {joined_country_rows}/{len(enriched_rows)}")
+          if foreign_country_rows < 10:
+              raise SystemExit(f"Foreign/ADR coverage unexpectedly low: {foreign_country_rows}")
 
           captured_at = datetime.now(timezone.utc).isoformat()
-          digest = hashlib.sha256(raw).hexdigest()
+          filtered_digest = hashlib.sha256(filtered_raw).hexdigest()
+          all_digest = hashlib.sha256(all_raw).hexdigest()
+          normalized_bytes = (json.dumps(enriched_rows, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+          normalized_digest = hashlib.sha256(normalized_bytes).hexdigest()
+
           target = pathlib.Path("nasdaq-smallcap-capture")
           target.mkdir(parents=True, exist_ok=True)
-          (target / "nasdaq-smallcap-official.json").write_bytes(raw)
+          (target / "nasdaq-smallcap-official.json").write_bytes(filtered_raw)
+          (target / "nasdaq-all-listed-official.json").write_bytes(all_raw)
+          (target / "nasdaq-smallcap-enriched.json").write_bytes(normalized_bytes)
+
           metadata = {
               "source": "Nasdaq official screener",
-              "url": url,
+              "filtered_url": FILTERED_URL,
+              "all_listed_url": ALL_LISTED_URL,
               "captured_at_utc": captured_at,
-              "http_status": status,
-              "response_headers": response_headers,
-              "raw_sha256": digest,
-              "row_count": len(rows),
-              "reported_totalrecords": total,
-              "foreign_country_rows": sum(1 for row in rows if row.get("country") and row.get("country") != "United States"),
-              "blank_country_rows": sum(1 for row in rows if not row.get("country")),
+              "filtered_response_headers": filtered_headers,
+              "all_listed_response_headers": all_headers,
+              "filtered_raw_sha256": filtered_digest,
+              "all_listed_raw_sha256": all_digest,
+              "normalized_enriched_sha256": normalized_digest,
+              "filtered_row_count": len(filtered_rows),
+              "filtered_reported_totalrecords": filtered_total,
+              "all_listed_row_count": len(all_rows),
+              "all_listed_reported_totalrecords": all_total,
+              "country_joined_rows": joined_country_rows,
+              "foreign_country_rows": foreign_country_rows,
+              "blank_country_rows": len(enriched_rows) - joined_country_rows,
+              "duplicate_symbols": duplicate_symbols,
               "out_of_band_rows": out_of_band,
-              "schema_required_fields": sorted(required),
+              "missing_from_all_listed": missing_from_all,
+              "schema_required_filtered_fields": sorted(required_filtered),
           }
-          (target / "capture-metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-          (target / "SHA256SUMS").write_text(f"{digest}  nasdaq-smallcap-official.json\n", encoding="utf-8")
+          (target / "capture-metadata.json").write_text(
+              json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          (target / "SHA256SUMS").write_text(
+              f"{filtered_digest}  nasdaq-smallcap-official.json\n"
+              f"{all_digest}  nasdaq-all-listed-official.json\n"
+              f"{normalized_digest}  nasdaq-smallcap-enriched.json\n",
+              encoding="utf-8",
+          )
           print(json.dumps(metadata, indent=2, sort_keys=True))
           PY
 
       - name: Upload immutable capture
         uses: actions/upload-artifact@v4
         with:
-          name: nasdaq-smallcap-official-20260803
+          name: nasdaq-smallcap-official-${{ github.event.pull_request.head.sha }}
           path: nasdaq-smallcap-capture/
           if-no-files-found: error
           retention-days: 7
+          compression-level: 0
