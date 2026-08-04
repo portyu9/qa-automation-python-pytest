@@ -1,25 +1,22 @@
 name: Nasdaq small-cap snapshot capture
 
 on:
-  push:
+  pull_request:
     branches:
-      - data-capture/nasdaq-smallcap-20260803
+      - main
     paths:
       - .github/workflows/nasdaq-smallcap-capture.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   capture:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout isolated branch
+      - name: Checkout capture branch
         uses: actions/checkout@v4
-        with:
-          ref: data-capture/nasdaq-smallcap-20260803
-          fetch-depth: 0
 
       - name: Fetch and validate official Nasdaq small-cap snapshot
         shell: bash
@@ -79,7 +76,7 @@ jobs:
 
           captured_at = datetime.now(timezone.utc).isoformat()
           digest = hashlib.sha256(raw).hexdigest()
-          target = pathlib.Path(".scan-artifacts/nasdaq-smallcap-20260803")
+          target = pathlib.Path("nasdaq-smallcap-capture")
           target.mkdir(parents=True, exist_ok=True)
           (target / "nasdaq-smallcap-official.json").write_bytes(raw)
           metadata = {
@@ -101,12 +98,10 @@ jobs:
           print(json.dumps(metadata, indent=2, sort_keys=True))
           PY
 
-      - name: Commit immutable capture to isolated branch
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "framework-v2-capture"
-          git config user.email "framework-v2-capture@users.noreply.github.com"
-          git add .scan-artifacts/nasdaq-smallcap-20260803
-          git commit -m "data: capture official Nasdaq small-cap snapshot"
-          git push origin HEAD:data-capture/nasdaq-smallcap-20260803
+      - name: Upload immutable capture
+        uses: actions/upload-artifact@v4
+        with:
+          name: nasdaq-smallcap-official-20260803
+          path: nasdaq-smallcap-capture/
+          if-no-files-found: error
+          retention-days: 7
