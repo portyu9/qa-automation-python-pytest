@@ -59,6 +59,17 @@ jobs:
                   total = len(rows)
               return rows, total, shape
 
+          def parse_number(value):
+              if value is None:
+                  return None
+              text = str(value).replace(",", "").replace("$", "").strip()
+              if not text or text in {"--", "N/A", "NA"}:
+                  return None
+              try:
+                  return float(text)
+              except ValueError:
+                  return None
+
           def fetch(url: str):
               request = urllib.request.Request(url, headers=HEADERS)
               with urllib.request.urlopen(request, timeout=60) as response:
@@ -93,10 +104,7 @@ jobs:
                   duplicate_symbols.append(symbol)
               seen.add(symbol)
               cap = row.get("marketCap")
-              try:
-                  cap_value = float(cap)
-              except (TypeError, ValueError):
-                  cap_value = None
+              cap_value = parse_number(cap)
               if cap_value is None or not (300_000_000 <= cap_value <= 2_000_000_000):
                   out_of_band.append({"index": index, "symbol": row.get("symbol"), "marketCap": cap})
 
@@ -122,6 +130,8 @@ jobs:
                   missing_from_all.append(symbol)
               enriched = dict(row)
               enriched["symbol"] = symbol
+              enriched["marketCap_numeric"] = parse_number(row.get("marketCap"))
+              enriched["lastsale_numeric"] = parse_number(row.get("lastsale"))
               enriched["country"] = (all_row or {}).get("country")
               enriched["industry"] = (all_row or {}).get("industry")
               enriched["sector"] = (all_row or {}).get("sector")
