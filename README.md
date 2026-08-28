@@ -1,42 +1,82 @@
-# Python / pytest Automation Framework
+# Python / pytest Quality Engineering Framework
 
-A layered Python test framework for unit, API, contract, database, browser, security, and performance verification. pytest remains the orchestration surface; framework code supplies validated runtime configuration, deterministic dependency boundaries, HTTP policy, persistence helpers, browser page abstractions, and privacy-aware run diagnostics without hiding native pytest or Playwright behavior.
+[![CI](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/ci.yml/badge.svg)](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/ci.yml)
+[![Extended](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/extended.yml/badge.svg)](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/extended.yml)
+[![Security](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/security.yml/badge.svg)](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/security.yml)
 
-## Engineering contract
+A layered Python quality-engineering framework for deterministic unit, API, contract, persistence, browser, security, and performance verification. `pytest` remains the orchestration surface; framework modules own runtime validation, HTTP policy, dependency boundaries, persistence lifecycle, browser abstractions, correlation, and privacy-aware evidence without obscuring native pytest, requests, SQLAlchemy, or Playwright behavior.
 
-| Concern | Framework policy |
+> [!IMPORTANT]
+> The architecture optimizes for **failure attribution before test volume**. A failed run should identify whether the first broken boundary is configuration, framework lifecycle, transport, protocol, persistence, browser behavior, security policy, or an external environment. Retries and additional abstraction are not substitutes for that classification.
+
+## Capability map
+
+| Validation plane | What it proves | Execution policy | Primary evidence |
+| --- | --- | --- | --- |
+| Fast CI | Unit, API, contract, database, framework invariants | Python 3.11 / 3.12 / 3.13 | JUnit, coverage XML, run manifest |
+| Browser CI | Critical Chromium behavior | Python 3.12 + native pytest-playwright | JUnit, run manifest, Playwright evidence |
+| Extended browser | Engine compatibility | Chromium + Firefox + WebKit | Per-engine JUnit, run manifest, summary |
+| Security gate | Dependency and repository-configuration risk | Trivy filesystem scan | JSON findings + Markdown summary |
+| Optional DAST | Dynamic behavior of the local mock API | OWASP ZAP, loopback target only | pytest assertion + ZAP alert classification |
+| Performance | Explicit performance experiments | Locust / controlled target only | Tool-native metrics |
+| Observability | Run identity and gate status | Correlated CI + structured artifacts | `ci-observability*.json`, run manifests, Actions summary |
+
+### Gate model
+
+```mermaid
+flowchart LR
+    CHANGE[Change] --> FAST[Fast CI]
+    CHANGE --> SEC[Security gate]
+    FAST --> BROWSER[Chromium gate]
+    CHANGE -->|browser/framework paths| EXT[Extended browser matrix]
+    EXT --> CH[Chromium]
+    EXT --> FF[Firefox]
+    EXT --> WK[WebKit]
+    FAST --> OBS[Structured evidence]
+    BROWSER --> OBS
+    EXT --> OBS
+    SEC --> OBS
+```
+
+The standard PR lane stays fast. Cross-browser multiplication is isolated in `extended.yml`, triggered by browser/framework changes, `main`, schedule, or manual dispatch. Security scanning is a separate failure domain so dependency/configuration risk is not confused with behavioral test failures.
+
+## Engineering invariants
+
+| Concern | Framework contract |
 | --- | --- |
-| Configuration | Parse once from environment, validate type/range/URL semantics, expose immutable settings. |
-| Base URL | Absolute HTTP(S), valid port, no URL credentials/query/fragment; optional path prefixes allowed. |
-| Network calls | Bounded connect/read timeouts, pooling, run correlation, retries only for safe/idempotent methods. |
-| Test isolation | Tests own mutable data; in-memory SQLite and a local Flask API provide deterministic fast-layer dependencies. |
-| Browser synchronization | Playwright web-first behavior and semantic locators; fixed sleeps are not synchronization. |
-| Parallelism | Fast tests assume concurrency; xdist workers do not race the controller-owned run manifest. |
-| Diagnostics | JUnit, coverage, browser evidence, and an atomic `reports/run-manifest.json`. |
-| Diagnostic privacy | Secret-like runtime keys are redacted; persisted URLs retain only origin/path. |
-| CI | Quality + xdist framework contract first, fast tests across Python 3.11/3.12/3.13, separate Chromium gate. |
+| Configuration | Parse external values once, validate type/range/URL semantics, expose immutable settings. |
+| Base URLs | Absolute HTTP(S), valid port, no URL credentials, query string, or fragment. |
+| HTTP policy | Connection/read budgets, pooling, correlation, and retries for safe/idempotent methods only. |
+| Isolation | Tests own mutable state; local Flask and in-memory SQLite provide deterministic fast boundaries. |
+| Browser synchronization | Playwright actionability + web-first assertions; elapsed time is not a readiness condition. |
+| Parallelism | Fast tests are concurrency-safe; xdist workers never race the controller-owned run manifest. |
+| Evidence | Machine-readable reports are bounded, atomic where shared, and scrub URL user-info/query/fragment. |
+| Security | Automated dependency/configuration scanning plus a loopback-only optional active DAST hook. |
+| CI integrity | Test exit codes remain authoritative; reporting steps run `always()` without converting failures to success. |
 
 ## Architecture
 
 ```mermaid
-flowchart LR
-    CI[GitHub Actions] --> Q[Quality + framework contract]
-    Q --> PY[pytest]
-    PY --> UNIT[Unit/framework]
-    PY --> API[API + contract]
-    PY --> DB[Database]
-    PY --> UI[Playwright]
-    API --> HTTP[HTTP client policy]
-    API --> MOCK[Local Flask dependency]
-    DB --> SQL[(In-memory SQLite)]
+flowchart TD
+    PYTEST[pytest orchestration]
+    PYTEST --> CFG[TestSettings]
+    PYTEST --> UNIT[Unit / framework contracts]
+    PYTEST --> API[API / contract tests]
+    PYTEST --> DB[Database tests]
+    PYTEST --> UI[Playwright browser tests]
+    API --> CLIENT[HTTP client policy]
+    API --> MOCK[Local Flask API]
+    DB --> REPO[Repository layer]
+    REPO --> SQLITE[(In-memory SQLite)]
     UI --> PAGES[Page abstractions]
-    PY --> MAN[Controller-owned run manifest]
-    MAN --> REP[reports/]
+    PYTEST --> MAN[Controller-owned run manifest]
+    MAN --> REPORTS[reports/]
+    REPORTS --> CI[CI artifacts / summaries]
 ```
 
-The design separates **test intent** from **execution policy**. Tests describe behavior. Configuration, retry policy, process readiness, persistence setup, and diagnostic serialization live in framework modules.
+The dependency direction is deliberate: tests state intent; framework code controls boundaries. HTTP retry behavior does not live in assertions, browser readiness does not live in sleeps, and shared diagnostic serialization does not live in xdist workers.
 
-## Repository layout
+## Repository map
 
 ```text
 .
@@ -65,6 +105,10 @@ The design separates **test intent** from **execution policy**. Tests describe b
 │   ├── framework/
 │   ├── performance/
 │   └── security/
+├── .github/workflows/
+│   ├── ci.yml
+│   ├── extended.yml
+│   └── security.yml
 ├── conftest.py
 ├── pytest.ini
 ├── pyproject.toml
@@ -73,7 +117,7 @@ The design separates **test intent** from **execution policy**. Tests describe b
 
 ## Quick start
 
-Python 3.11+ is supported by the CI matrix.
+Python 3.11+ is supported by the CI compatibility matrix.
 
 ```bash
 python -m venv .venv
@@ -84,198 +128,283 @@ python -m playwright install chromium
 pytest --ignore=tests/e2e --ignore=tests/performance --ignore=tests/security
 ```
 
-Run browser tests separately:
+Run the browser layer:
 
 ```bash
-pytest tests/e2e
+pytest tests/e2e --browser=chromium
 ```
 
-Run framework contracts in parallel, matching the CI ownership check:
+Run a different Playwright engine explicitly:
 
 ```bash
+python -m playwright install firefox
+TEST_BROWSER=firefox pytest tests/e2e --browser=firefox
+```
+
+> [!NOTE]
+> `TEST_BROWSER` is framework metadata/configuration; pytest-playwright engine selection is performed with its native `--browser` option. Extended CI sets both to the same value so execution behavior and diagnostic metadata cannot disagree.
+
+<details>
+<summary><strong>Operator command reference</strong></summary>
+
+```bash
+# Static/source quality
+ruff check .
+python -m compileall -q src tests
+
+# Parallel framework-lifecycle contract
 TEST_REPORT_DIR=reports/xdist-contract \
 pytest tests/framework/test_configuration_contract.py \
        tests/framework/test_run_manifest.py \
        -n 2
+
+# Fast functional gate with coverage
+pytest \
+  --ignore=tests/e2e \
+  --ignore=tests/performance \
+  --ignore=tests/security \
+  --cov=src \
+  --cov-report=term-missing
+
+# Optional local-only ZAP integration
+pytest tests/security -m security
 ```
 
-Run quality checks:
+The ZAP test skips when the Python ZAP client or daemon is unavailable. When enabled, its active-scan target is hard-bound to `127.0.0.1:5000`; environment variables cannot redirect it toward an external system.
 
-```bash
-ruff check .
-python -m compileall -q src tests
-```
+</details>
 
 ## Runtime configuration
 
-`src/config.py` converts environment variables into immutable `TestSettings`. Invalid values fail before network/browser behavior begins.
+`src/config.py` is the runtime boundary. Invalid values fail before network or browser side effects.
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `TEST_BASE_URL` | Base HTTP target used by framework clients | `https://jsonplaceholder.typicode.com` |
-| `TEST_BROWSER` | `chromium`, `firefox`, or `webkit` | `chromium` |
+| `TEST_BROWSER` | Framework browser identity: `chromium`, `firefox`, `webkit` | `chromium` |
 | `TEST_HEADLESS` | Browser headless mode | `true` |
 | `TEST_CONNECT_TIMEOUT_SECONDS` | TCP/TLS connection budget | `5` |
-| `TEST_READ_TIMEOUT_SECONDS` | Response read budget | `15` |
+| `TEST_READ_TIMEOUT_SECONDS` | Response-read budget | `15` |
 | `TEST_RETRY_TOTAL` | Idempotent transport retry budget | `2` |
 | `TEST_RUN_ID` | Cross-layer correlation identifier | generated UUID |
-| `TEST_REPORT_DIR` | Run-manifest output directory | `reports` |
+| `TEST_REPORT_DIR` | Run-manifest directory | `reports` |
 
-`TEST_BASE_URL` may include a path prefix but cannot contain URL credentials, a query string, or a fragment. A malformed or out-of-syntax port is rejected during configuration. Authentication belongs in controlled headers/cookies, not URL user-info.
+`TEST_BASE_URL` may contain a path prefix, but credentials, query strings, fragments, malformed ports, and out-of-range ports are rejected before use. Authentication belongs in explicit headers/cookies or application flows, not URL user-info.
 
-`.env.example` contains non-secret examples only.
+## Layer selection
 
-## Test layers and ownership
+A test belongs at the **lowest layer that can conclusively prove the requirement**.
 
-| Layer | Primary question | Dependency strategy | Typical gate |
-| --- | --- | --- | --- |
-| Unit | Does one function/object behave correctly? | In-process | Every change |
-| Framework contract | Do config, diagnostics, repositories, and lifecycle helpers preserve invariants? | Deterministic local | Every change |
-| API | Does HTTP behavior satisfy semantic expectations? | Local mock where possible | Every change / integration |
-| Contract | Does service shape match versioned expectations? | OpenAPI/schema artifacts | Every change |
-| Database | Do persistence/repository semantics hold? | In-memory SQLite | Every change |
-| Browser | Does a critical browser workflow function? | Chromium CI; other engines risk-based | Pull request / release |
-| Security | Do explicit security assertions hold? | Controlled target only | Scheduled / release |
-| Performance | Are agreed budgets preserved? | Authorized environment only | Controlled run |
+| Requirement | Preferred layer | Reason |
+| --- | --- | --- |
+| Pure transformation / rule | Unit | Minimal dependency surface |
+| HTTP status/body semantics | API | Transport visible without browser cost |
+| Provider shape | Contract / schema | Version-controlled structural expectation |
+| Repository/transaction behavior | Database | Persistence semantics are the subject |
+| Rendering/navigation/input behavior | Browser | Requires a browser engine |
+| Engine compatibility | Extended browser matrix | Risk is browser-specific |
+| Dependency/configuration exposure | Security workflow | Static repository risk, not runtime behavior |
+| Dynamic application security | ZAP local DAST | Controlled active behavior against local fixture only |
 
-A test belongs at the **lowest layer that can prove the behavior**. Browser tests should not duplicate deterministic rule matrices that can be covered faster at lower layers.
+Browser tests should not reproduce large business-data matrices that are already deterministic at API/unit layers.
 
-## HTTP policy
+## HTTP transport policy
 
-`src/http_client.py` owns transport behavior:
+`src/http_client.py` owns cross-cutting HTTP semantics:
 
 - persistent `requests.Session` pooling;
 - separate connect/read timeout budgets;
-- bounded retry count;
-- retryable transient statuses;
+- bounded retries;
+- explicitly retryable transient statuses;
 - retries restricted to safe/idempotent methods;
 - `X-Test-Run-Id` correlation;
 - deterministic close/context-manager lifecycle.
 
-Do not add blanket retries around assertions or mutating operations. Retry is valid only where repeat execution is safe and the failure class is transient.
+> [!WARNING]
+> Assertion retries and mutating-request retries are not a reliability strategy. Repeat execution is valid only when the operation is safe to repeat and the failure is classified as transient.
 
 ## Deterministic dependency boundaries
 
-Fast API tests can start the local Flask service through `run_mock_api`. Readiness uses bounded TCP polling rather than a fixed startup sleep. Teardown requests graceful termination and escalates only after the cleanup budget.
+Fast API tests start the local Flask service through `run_mock_api`. Readiness is TCP-polled against a monotonic deadline rather than guessed with a startup sleep. Teardown attempts graceful termination and escalates only after a bounded cleanup budget.
 
-Database tests use a session-scoped in-memory SQLite engine and short-lived SQLAlchemy sessions. Tests create the state they assert and do not depend on ordering.
+Database tests use a session-scoped in-memory SQLite engine and short-lived SQLAlchemy sessions. Tests create the state they assert; ordering is never a dependency contract.
 
-## Browser design
+## Browser model
 
-Page modules expose application intent, not generic browser wrappers. Prefer:
+Page abstractions expose application intent and stable state, not generic wrappers around Playwright. Prefer role/label/test-id locators and web-first assertions.
 
-- role/label/test-id locators;
-- web-first Playwright assertions;
-- API/data setup when setup is not the behavior under test;
-- unique data for mutable state;
-- browser projects selected by compatibility risk.
-
-Avoid `time.sleep()` for UI readiness. A fixed delay slows healthy runs and remains nondeterministic under load.
-
-## Run diagnostics
-
-`conftest.py` registers a small operational pytest plugin. The controller writes:
-
-```text
-reports/run-manifest.json
+```python
+page.get_by_role("heading", name="Example Domain").wait_for()
 ```
 
-The manifest contains:
+Avoid fixed readiness delays:
+
+```python
+time.sleep(3)  # does not prove the required state exists
+```
+
+### Cross-browser expansion
+
+`extended.yml` executes the E2E contract under Chromium, Firefox, and WebKit. Each matrix cell installs only its required engine, receives a run ID suffixed with the engine name, writes an engine-specific JUnit/run-manifest directory, and uploads independent evidence.
+
+This matrix exists to detect engine-specific rendering, navigation, input, standards, and compatibility behavior. It is not a reason to multiply every business-data case three times.
+
+## Security engineering
+
+### Repository security gate
+
+`.github/workflows/security.yml` uses the open-source Trivy filesystem scanner. The action is pinned to an immutable commit corresponding to `v0.36.0`; the scanner engine is explicitly set to `v0.74.0`.
+
+The gate scans:
+
+- dependency manifests and lock-compatible package metadata;
+- supported repository/configuration misconfigurations;
+- fixed HIGH/CRITICAL vulnerability findings;
+- HIGH/CRITICAL supported configuration findings.
+
+`ignore-unfixed: true` keeps the blocking policy focused on findings for which remediation is available. The job preserves `reports/security/trivy.json` and a compact `summary.md` for triage.
+
+### Optional dynamic scan
+
+`tests/security/test_security.py` integrates with OWASP ZAP when a local daemon is available. The scan lifecycle uses bounded polling and the active target is hard-coded to the local mock API. This prevents a test environment variable from turning an ordinary test invocation into active scanning of an unrelated host.
+
+## Test observability
+
+Observability is implemented as **correlation + structured evidence**, not as a required SaaS dependency.
+
+### Correlation hierarchy
+
+```text
+GitHub Actions run
+└── TEST_RUN_ID
+    ├── pytest node IDs
+    ├── xdist worker identity
+    ├── HTTP X-Test-Run-Id
+    └── browser / report artifacts
+```
+
+### Run manifest
+
+The controller writes `reports/run-manifest.json` with:
 
 - schema version and run ID;
-- validated non-secret runtime metadata;
+- validated non-sensitive runtime metadata;
 - one retained outcome per pytest node ID;
-- retained phase (`setup`, `call`, or `teardown`);
+- final retained phase (`setup`, `call`, `teardown`);
 - bounded duration;
-- worker identity when xdist is active;
-- deterministic filesystem-safe artifact key;
-- aggregate passed/failed/skipped counts.
+- worker identity;
+- deterministic artifact key;
+- aggregate pass/fail/skip totals.
 
-When multiple phase reports exist, the most severe outcome is retained so a teardown failure cannot be hidden by an earlier successful call phase.
+When multiple phase reports exist, the most severe outcome wins so teardown/setup failures are not hidden by a previously successful call phase.
 
-### xdist ownership
+### CI observability envelope
 
-The controller is the only run-manifest writer. xdist workers produce normal test reports and the controller aggregates them. Workers never write the shared run-level file.
-
-CI verifies this with a real two-worker framework-contract run, parses the resulting manifest, confirms it contains outcomes, and confirms no temporary file remains. This tests the multi-process topology rather than merely unit-testing JSON serialization.
+Primary CI jobs also emit small `reports/ci-observability*.json` files containing run ID, runtime dimension, final job status, commit SHA, and ref. The Actions step summary links the human interpretation to the same run ID. These files are deliberately simple enough to ingest later with open-source log/telemetry tooling without coupling the tests to an external backend.
 
 ### Privacy and atomicity
 
-Diagnostic URLs retain only scheme/host/path. URL credentials, query strings, and fragments are removed before persistence, covering common token-in-query patterns. Secret-like runtime keys are replaced with `<redacted>`.
+URL diagnostics retain scheme/host/path and remove user-info, query strings, and fragments. Secret-like runtime keys are redacted in the run manifest. Shared manifest writes use temporary files followed by atomic replacement.
 
-The manifest is written to a temporary file and atomically renamed so an interrupted process cannot leave partial JSON at the final artifact path.
+Screenshots, traces, DOM/page source, and application payloads may still contain visible synthetic data. Structured redaction is not a substitute for safe test accounts and data minimization.
 
-Screenshots/traces/page content can still contain application-visible values. Use synthetic data and controlled test accounts; structured redaction does not sanitize arbitrary pixels/DOM content.
+<details>
+<summary><strong>Evidence tree</strong></summary>
+
+```text
+reports/
+├── run-manifest.json
+├── junit-<python>.xml
+├── coverage-<python>.xml
+├── ci-observability-python-<python>.json
+├── ci-observability-browser.json
+└── security/
+    ├── trivy.json
+    └── summary.md
+
+test-results/ / playwright-report/
+└── browser-native evidence when produced
+```
+
+</details>
 
 ## CI topology
 
 ```mermaid
 flowchart TD
-    PR[Push / pull request] --> Q[Quality
-Ruff + compile + xdist manifest contract]
-    Q --> P311[Fast tests
-Python 3.11]
-    Q --> P312[Fast tests
-Python 3.12]
-    Q --> P313[Fast tests
-Python 3.13]
-    Q --> B[Chromium browser gate]
-    P311 --> A[JUnit + coverage]
-    P312 --> A
-    P313 --> A
-    B --> E[Browser evidence]
-```
+    PR[Push / pull request] --> Q[Quality + xdist lifecycle contract]
+    Q --> P311[Fast · Python 3.11]
+    Q --> P312[Fast · Python 3.12]
+    Q --> P313[Fast · Python 3.13]
+    Q --> C[Chromium browser gate]
 
-CI uses read-only repository permissions, concurrency cancellation, dependency caching, bounded artifact retention, explicit Chromium installation, and separate fast/browser failure domains.
+    PR --> S[Trivy security gate]
+    BCHANGE[Browser/framework change] --> X[Extended browser matrix]
+    X --> X1[Chromium]
+    X --> X2[Firefox]
+    X --> X3[WebKit]
+
+    P311 --> E[Structured evidence]
+    P312 --> E
+    P313 --> E
+    C --> E
+    S --> E
+    X1 --> E
+    X2 --> E
+    X3 --> E
+```
 
 ## Failure triage
 
-| Failure class | First evidence/action |
-| --- | --- |
-| Configuration | Correct invalid input; do not rerun as a workaround |
-| Ruff/compile | Fix the static/source defect |
-| xdist manifest contract | Treat as framework lifecycle/parallelism regression |
-| Fast test | pytest node ID + assertion + JUnit + manifest |
-| Mock readiness | Process/port lifecycle evidence |
-| Browser | Playwright evidence + correlated run ID |
-| External timeout | Classify transport/dependency before changing assertions |
-| Retry-only pass | Reliability investigation |
-
-A rerun that makes a failure disappear is evidence of nondeterminism, not proof that the test is healthy.
+| Signal | First classification | Correct first move |
+| --- | --- | --- |
+| Configuration exception | Input contract | Correct the invalid value; do not rerun it away |
+| Ruff / compile failure | Source quality | Fix source/static defect |
+| xdist manifest contract | Framework lifecycle | Inspect controller/worker ownership |
+| API assertion | Protocol/semantic behavior | Use node ID + local dependency evidence |
+| Mock readiness | Process lifecycle | Inspect listener startup/port ownership |
+| Database assertion | Persistence semantics | Inspect test-owned state/transaction boundary |
+| Chromium-only failure | Browser/application | Inspect Playwright evidence |
+| One extended engine fails | Engine compatibility | Compare browser-specific behavior before weakening assertions |
+| Trivy gate | Dependency/configuration risk | Triage exact JSON finding and remediation |
+| ZAP finding | Dynamic security behavior | Reproduce only against local controlled target |
+| Retry-only pass | Nondeterminism | Investigate state, timing, environment saturation |
 
 ## Extension rules
 
-When adding framework behavior:
+When extending the framework:
 
-- validate external input at one configuration boundary before side effects;
-- keep transport policy in the HTTP layer;
-- add repository methods around domain persistence operations, not generic SQL wrappers;
-- keep page objects feature-oriented and small;
-- add reusable fixtures only when their lifecycle truly spans tests/modules;
-- add framework-contract tests for infrastructure invariants;
-- keep run-level shared artifacts single-writer or explicitly namespaced;
-- emit bounded structured diagnostics;
-- never persist credentials, authorization, query secrets, or sensitive payloads by default;
-- preserve native pytest/Playwright APIs wherever they already express the operation clearly.
+1. validate new external inputs before side effects;
+2. keep HTTP transport policy in the HTTP layer;
+3. keep repository methods domain-oriented rather than building a generic SQL façade;
+4. keep page objects feature-oriented and preserve native Playwright primitives;
+5. add reusable fixtures only when lifecycle ownership truly spans tests/modules;
+6. add framework-contract tests for infrastructure invariants;
+7. keep shared artifacts single-writer or explicitly namespaced;
+8. emit bounded, privacy-aware diagnostics;
+9. add browser multiplication only for browser risk;
+10. keep active security/performance behavior constrained to controlled targets.
 
-## Anti-patterns
+## Explicit anti-patterns
 
-The framework intentionally rejects:
+The framework rejects:
 
-- global mutable test state;
+- global mutable business/test state;
 - order-dependent tests;
-- unconditional assertion retries;
-- fixed sleeps as readiness checks;
-- credentials/query secrets embedded in base URLs;
-- generic wrappers that obscure native pytest/requests/Playwright APIs;
-- uncontrolled security/performance activity against public systems;
-- diagnostics that dump credentials or full sensitive payloads;
-- CI jobs that suppress a failing test command's exit status.
+- `time.sleep()` as readiness;
+- blanket assertion retries;
+- credentials or query secrets in base URLs;
+- generic wrappers that make pytest/requests/Playwright harder to debug;
+- xdist workers writing one shared artifact;
+- unbounded diagnostic payloads;
+- active security or sustained performance activity against arbitrary targets;
+- CI reporting that suppresses the real test process exit code.
 
-## Further design documentation
+## Design references
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — configuration, transport, lifecycle, parallelism, and evidence boundaries.
-- [`docs/TEST_STRATEGY.md`](docs/TEST_STRATEGY.md) — layer selection, xdist contract, reliability, evidence, and gate policy.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — configuration, transport, persistence, browser, parallelism, and evidence boundaries.
+- [`docs/TEST_STRATEGY.md`](docs/TEST_STRATEGY.md) — layer selection, reliability, browser coverage, and gate policy.
 - [`contract/openapi.yaml`](contract/openapi.yaml) — version-controlled API contract artifact.
 
-The framework should evolve by making failures **more attributable**, dependencies **more explicit**, diagnostic data **safer**, and test intent **more readable**—not by adding abstraction layers that merely make native operations harder to see.
+> [!TIP]
+> The framework should evolve by making failures **more attributable**, dependencies **more explicit**, evidence **safer**, and test intent **more readable**. A new abstraction is justified only when it enforces a durable policy or removes a demonstrated source of ambiguity.
