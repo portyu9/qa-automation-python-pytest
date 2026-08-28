@@ -1,21 +1,15 @@
-"""
-Database and repository tests.
-
-These tests exercise the SQLAlchemy helpers and the repository abstraction.
-"""
-
+"""Database and repository behavior tests."""
 
 import pytest
-
 from sqlalchemy.orm import Session
 
-from src.db import get_engine, init_db, get_all_users, User
+from src.db import get_all_users
 from src.repositories.user_repository import UserRepository
 
 
 @pytest.mark.db
 def test_get_all_users(db_session: Session) -> None:
-    """Verify that ``get_all_users`` returns the seeded users in order."""
+    """Return seeded users in their expected order."""
     users = get_all_users(db_session)
     assert len(users) == 3
     assert users[0].name == "Alice"
@@ -24,7 +18,7 @@ def test_get_all_users(db_session: Session) -> None:
 
 @pytest.mark.db
 def test_user_repository_find_by_id() -> None:
-    """Verify that the repository can retrieve users by id and close sessions."""
+    """Retrieve a user by identifier and close repository resources."""
     repo = UserRepository.initialize("sqlite:///:memory:")
     try:
         user = repo.find_by_id(2)
