@@ -59,7 +59,7 @@ jobs:
           --cov-report=term-missing
       - name: Upload functional evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-${{ matrix.python }}-reports
           path: reports/
@@ -85,7 +85,7 @@ jobs:
         run: pytest tests/e2e --junitxml=reports/e2e.xml
       - name: Upload browser evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: browser-evidence
           path: |
