@@ -1,54 +1,64 @@
-"""
-Security test placeholder for running an OWASP ZAP scan.
+"""Optional OWASP ZAP dynamic scan against the deterministic local mock API."""
 
-I include this module to demonstrate how to integrate security scanning into our framework. The test is skipped if the ZAP Python API is not installed or a daemon is not running. When enabled, it launches a quick scan against the local mock API and fails if any alerts are raised.
-"""
+from __future__ import annotations
 
 import os
-import pytest
 import socket
+import time
+from collections.abc import Callable
 
-# Skip tests if ZAP Python API isn't installed
+import pytest
+
 pytest.importorskip("zapv2")
+
+_ZAP_HOST = "127.0.0.1"
+_ZAP_PORT = 8090
+_LOCAL_TARGET = "http://127.0.0.1:5000"
+
+
+def _wait_for_scan(
+    status: Callable[[], str], *, timeout_seconds: float = 60.0, poll_seconds: float = 0.25
+) -> None:
+    """Wait for a ZAP asynchronous scan with a bounded deadline."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if int(status()) >= 100:
+            return
+        time.sleep(poll_seconds)
+    raise TimeoutError(f"ZAP scan did not complete within {timeout_seconds:.0f}s")
+
 
 @pytest.mark.security
 def test_owasp_zap_scan(run_mock_api) -> None:
-    """
-    Run a very basic OWASP ZAP scan against the mock API.
-
-    To enable this test, install ``python-owasp-zap-v2.4`` and start the ZAP
-    daemon (e.g., ``zap.sh -daemon -port 8090``). The test will connect to
-    the daemon, spider the target and assert that no alerts are raised.
-    """
+    """Actively scan only the loopback mock API and reject medium-or-higher alerts."""
     from zapv2 import ZAPv2  # type: ignore
 
-    # Skip test if ZAP daemon is not running
-    zap_host = "127.0.0.1"
-    zap_port = 8090
     try:
-        with socket.create_connection((zap_host, zap_port), timeout=2):
+        with socket.create_connection((_ZAP_HOST, _ZAP_PORT), timeout=2):
             pass
     except OSError:
-        pytest.skip(f"ZAP daemon not running on {zap_host}:{zap_port}, skipping test")
+        pytest.skip(f"ZAP daemon not running on {_ZAP_HOST}:{_ZAP_PORT}")
 
-    # Configure the ZAP API client; default port 8090 is used by the daemon
+    proxy = f"http://{_ZAP_HOST}:{_ZAP_PORT}"
     zap = ZAPv2(
         apikey=os.environ.get("ZAP_API_KEY"),
-        proxies={"http": "http://127.0.0.1:8090", "https": "http://127.0.0.1:8090"},
+        proxies={"http": proxy, "https": proxy},
     )
-    target = os.environ.get("API_BASE_URL", "http://localhost:5000")
 
-    # Access the target to register it with ZAP
-    zap.urlopen(target)
-    # Run the spider to discover endpoints
-    zap.spider.scan(target)
-    # Wait for the spider to finish
-    while int(zap.spider.status()) < 100:
-        pass
-    # Run the active scan
-    zap.ascan.scan(target)
-    while int(zap.ascan.status()) < 100:
-        pass
-    # Retrieve alerts and assert none are critical
-    alerts = zap.core.alerts(baseurl=target)
-    assert all(alert.get("risk").lower() in {"low", "informational"} for alert in alerts)
+    # The active scanner is intentionally hard-bound to the local fixture target.
+    # An environment variable cannot redirect this test toward an external system.
+    zap.urlopen(_LOCAL_TARGET)
+    zap.spider.scan(_LOCAL_TARGET)
+    _wait_for_scan(zap.spider.status)
+
+    zap.ascan.scan(_LOCAL_TARGET)
+    _wait_for_scan(zap.ascan.status)
+
+    alerts = zap.core.alerts(baseurl=_LOCAL_TARGET)
+    unacceptable = [
+        alert
+        for alert in alerts
+        if str(alert.get("risk", "")).strip().lower()
+        not in {"low", "informational"}
+    ]
+    assert not unacceptable, f"ZAP reported medium-or-higher findings: {unacceptable}"
