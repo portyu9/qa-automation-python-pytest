@@ -52,6 +52,17 @@ def _base_url(name: str, default: str) -> str:
     parsed = urlparse(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError(f"{name} must be an absolute http(s) URL, got {value!r}")
+
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError(f"{name} contains an invalid port, got {value!r}") from exc
+
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"{name} must not contain URL credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError(f"{name} must not contain a query string or fragment")
+
     return value
 
 
