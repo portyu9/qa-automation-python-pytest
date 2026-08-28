@@ -17,6 +17,7 @@ env:
   PYTHONUNBUFFERED: "1"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   TEST_BASE_URL: https://jsonplaceholder.typicode.com
+  TEST_RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
   quality:
@@ -73,6 +74,38 @@ jobs:
           --cov=src
           --cov-report=xml:reports/coverage-${{ matrix.python }}.xml
           --cov-report=term-missing
+      - name: Publish functional observability summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          PYTHON_VERSION: ${{ matrix.python }}
+        run: |
+          mkdir -p reports
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = {
+              "schemaVersion": 1,
+              "framework": "pytest",
+              "runId": os.environ["TEST_RUN_ID"],
+              "dimension": {"python": os.environ["PYTHON_VERSION"]},
+              "status": os.environ["JOB_STATUS"],
+              "sha": os.environ["GITHUB_SHA"],
+              "ref": os.environ["GITHUB_REF"],
+          }
+          Path(f"reports/ci-observability-python-{os.environ['PYTHON_VERSION']}.json").write_text(
+              json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+          {
+            echo "### pytest fast gate · Python ${{ matrix.python }}"
+            echo
+            echo "- Run ID: \`${TEST_RUN_ID}\`"
+            echo "- Job status: \`${JOB_STATUS}\`"
+            echo '- Evidence: JUnit + coverage XML + run manifest + CI observability envelope'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload functional evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -98,7 +131,38 @@ jobs:
         env:
           TEST_BROWSER: chromium
           TEST_HEADLESS: "true"
-        run: pytest tests/e2e --junitxml=reports/e2e.xml
+        run: pytest tests/e2e --browser=chromium --junitxml=reports/e2e.xml
+      - name: Publish browser observability summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          mkdir -p reports
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = {
+              "schemaVersion": 1,
+              "framework": "pytest-playwright",
+              "runId": os.environ["TEST_RUN_ID"],
+              "dimension": {"python": "3.12", "browser": "chromium"},
+              "status": os.environ["JOB_STATUS"],
+              "sha": os.environ["GITHUB_SHA"],
+              "ref": os.environ["GITHUB_REF"],
+          }
+          Path("reports/ci-observability-browser.json").write_text(
+              json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+          {
+            echo '### pytest / Playwright · Chromium'
+            echo
+            echo "- Run ID: \`${TEST_RUN_ID}\`"
+            echo "- Job status: \`${JOB_STATUS}\`"
+            echo '- Evidence: JUnit + run manifest + Playwright artifacts + CI observability envelope'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload browser evidence
         if: always()
         uses: actions/upload-artifact@v7
