@@ -1,6 +1,6 @@
 import pytest
 
-from src.config import TestSettings
+from src.config import TestSettings as RuntimeSettings
 
 
 @pytest.mark.unit
@@ -10,7 +10,7 @@ def test_settings_normalize_url_and_boolean(monkeypatch):
     monkeypatch.setenv("TEST_BROWSER", "firefox")
     monkeypatch.setenv("TEST_RUN_ID", "contract-test-run")
 
-    settings = TestSettings.from_env()
+    settings = RuntimeSettings.from_env()
 
     assert settings.base_url == "https://example.test"
     assert settings.headless is False
@@ -33,4 +33,4 @@ def test_invalid_settings_fail_before_test_execution(monkeypatch, name, value):
     monkeypatch.setenv(name, value)
 
     with pytest.raises(ValueError):
-        TestSettings.from_env()
+        RuntimeSettings.from_env()
