@@ -11,6 +11,6 @@ pytest-rerunfailures>=15,<17
 pytest-cov>=6,<8
 locust>=2.30,<3
 python-owasp-zap-v2.4>=0.1.0
-cryptography>=46,<47
+cryptography>=50.0.1,<51
 pyOpenSSL>=26.4.0,<27
 ruff>=0.12,<1
