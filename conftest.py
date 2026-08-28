@@ -13,7 +13,46 @@ from pathlib import Path
 import pytest
 from sqlalchemy.orm import Session
 
+from src.config import TestSettings as RuntimeSettings
 from src.db import get_engine, init_db
+from src.run_manifest import RunManifest
+
+
+class _RunManifestPlugin:
+    """Collect reports in the controller process, including xdist worker results."""
+
+    def __init__(self, config: pytest.Config) -> None:
+        self.config = config
+        self.manifest = RunManifest.from_settings(RuntimeSettings.from_env())
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        # Normal outcomes come from the call phase. Setup/teardown failures and
+        # setup-time skips are also retained because no call report may exist.
+        if report.when != "call" and report.outcome == "passed":
+            return
+        self.manifest.record(
+            nodeid=report.nodeid,
+            status=report.outcome,
+            phase=report.when,
+            duration_seconds=report.duration,
+            worker=str(getattr(report, "worker_id", "controller")),
+        )
+
+    def pytest_sessionfinish(self, session: pytest.Session, exitstatus: int) -> None:
+        del exitstatus
+        # xdist workers must never race to write the same manifest. The controller
+        # receives their reports and owns the single run-level artifact.
+        if hasattr(session.config, "workerinput"):
+            return
+        report_dir = Path(os.getenv("TEST_REPORT_DIR", "reports"))
+        self.manifest.write(report_dir / "run-manifest.json")
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Register operational diagnostics without changing native pytest semantics."""
+    plugin_name = "framework-run-manifest"
+    if not config.pluginmanager.hasplugin(plugin_name):
+        config.pluginmanager.register(_RunManifestPlugin(config), plugin_name)
 
 
 def _wait_for_port(host: str, port: int, timeout_seconds: float = 5.0) -> None:
