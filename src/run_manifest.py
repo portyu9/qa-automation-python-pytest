@@ -22,15 +22,17 @@ def safe_slug(value: str, *, max_length: int = 120) -> str:
 
 
 def redact_url(value: str) -> str:
-    """Remove URL user-info while preserving the target needed for diagnostics."""
+    """Keep URL origin/path while dropping user-info, query data, and fragments."""
     parsed = urlsplit(value)
     if not parsed.hostname:
         return value
 
-    host = parsed.hostname
+    hostname = parsed.hostname
+    host = f"[{hostname}]" if ":" in hostname else hostname
     if parsed.port is not None:
         host = f"{host}:{parsed.port}"
-    return urlunsplit((parsed.scheme, host, parsed.path, parsed.query, parsed.fragment))
+
+    return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
 
 
 def redact_mapping(values: dict[str, Any]) -> dict[str, Any]:
@@ -99,7 +101,10 @@ class RunManifest:
             self._outcomes[nodeid] = candidate
 
     def as_dict(self) -> dict[str, Any]:
-        outcomes = [asdict(item) for item in sorted(self._outcomes.values(), key=lambda item: item.nodeid)]
+        outcomes = [
+            asdict(item)
+            for item in sorted(self._outcomes.values(), key=lambda item: item.nodeid)
+        ]
         summary = {
             status: sum(item["status"] == status for item in outcomes)
             for status in ("passed", "failed", "skipped")
@@ -117,6 +122,9 @@ class RunManifest:
         """Write atomically so interrupted runs never leave partial JSON."""
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(f"{path.suffix}.tmp")
-        temporary.write_text(json.dumps(self.as_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.write_text(
+            json.dumps(self.as_dict(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         temporary.replace(path)
         return path
