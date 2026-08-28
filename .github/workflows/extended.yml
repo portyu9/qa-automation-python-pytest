@@ -1,0 +1,79 @@
+name: extended
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "conftest.py"
+      - "requirements.txt"
+      - "pyproject.toml"
+      - "src/pages/**"
+      - "tests/e2e/**"
+      - ".github/workflows/extended.yml"
+  schedule:
+    - cron: "41 7 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-extended-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cross-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    env:
+      PYTHONUNBUFFERED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      TEST_BASE_URL: https://jsonplaceholder.typicode.com
+      TEST_BROWSER: ${{ matrix.browser }}
+      TEST_HEADLESS: "true"
+      TEST_RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.browser }}
+      TEST_REPORT_DIR: reports/${{ matrix.browser }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+      - name: Install Playwright engine and operating-system dependencies
+        run: python -m playwright install --with-deps ${{ matrix.browser }}
+      - name: Run cross-browser E2E contract
+        run: >-
+          pytest tests/e2e
+          --browser=${{ matrix.browser }}
+          --junitxml=reports/${{ matrix.browser }}/junit.xml
+      - name: Publish browser observability summary
+        if: always()
+        run: |
+          mkdir -p "reports/${{ matrix.browser }}"
+          {
+            echo "### pytest / Playwright · ${{ matrix.browser }}"
+            echo
+            echo "- Run ID: \`${TEST_RUN_ID}\`"
+            echo "- Browser: \`${{ matrix.browser }}\`"
+            echo "- Python: \`3.12\`"
+            echo "- Job status: \`${{ job.status }}\`"
+            echo "- Evidence: JUnit + controller-owned run manifest"
+          } | tee "reports/${{ matrix.browser }}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload cross-browser evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-${{ matrix.browser }}-extended-evidence
+          path: |
+            reports/${{ matrix.browser }}/
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
