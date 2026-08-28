@@ -31,6 +31,22 @@ jobs:
       - run: pip install -r requirements.txt
       - run: ruff check .
       - run: python -m compileall -q src tests
+      - name: Validate xdist run-manifest ownership
+        env:
+          TEST_REPORT_DIR: reports/xdist-contract
+        run: |
+          pytest tests/framework/test_configuration_contract.py tests/framework/test_run_manifest.py -n 2
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report_dir = Path("reports/xdist-contract")
+          manifest_path = report_dir / "run-manifest.json"
+          payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+          assert payload["summary"]["total"] > 0
+          assert not list(report_dir.glob("*.tmp"))
+          print(f"xdist manifest outcomes={payload['summary']['total']}")
+          PY
 
   functional:
     needs: quality
