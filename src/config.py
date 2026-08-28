@@ -54,7 +54,7 @@ def _base_url(name: str, default: str) -> str:
         raise ValueError(f"{name} must be an absolute http(s) URL, got {value!r}")
 
     try:
-        parsed.port
+        _ = parsed.port
     except ValueError as exc:
         raise ValueError(f"{name} contains an invalid port, got {value!r}") from exc
 
