@@ -4,20 +4,16 @@
 [![Extended](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/extended.yml/badge.svg)](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/extended.yml)
 [![Security](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/security.yml/badge.svg)](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/security.yml)
 
-[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-3776AB)](https://www.python.org/)
-[![pytest](https://img.shields.io/badge/pytest-9.x-0A9EDC)](https://pytest.org/)
-[![Playwright](https://img.shields.io/badge/Playwright-1.62-2EAD33)](https://playwright.dev/python/)
-[![Requests](https://img.shields.io/badge/Requests-2.32-6E7781)](https://requests.readthedocs.io/)
-[![Flask](https://img.shields.io/badge/Flask-3.1-6E7781)](https://flask.palletsprojects.com/)
-[![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-D71F00)](https://www.sqlalchemy.org/)
-[![SQLite](https://img.shields.io/badge/SQLite-persistence-003B57)](https://www.sqlite.org/)
-[![Locust](https://img.shields.io/badge/Locust-2.x-00A398)](https://locust.io/)
-[![OWASP ZAP](https://img.shields.io/badge/OWASP%20ZAP-local%20DAST-00549E)](https://www.zaproxy.org/)
-[![Ruff](https://img.shields.io/badge/Ruff-static%20analysis-D7FF64)](https://docs.astral.sh/ruff/)
-[![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-CI-2088FF)](https://github.com/features/actions)
-[![Trivy](https://img.shields.io/badge/Trivy-security%20scan-1904DA)](https://trivy.dev/)
-[![License](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE)
-[![Security Policy](https://img.shields.io/badge/Security-Policy-6E7781)](.github/SECURITY.md)
+[![Python](https://img.shields.io/badge/Python-runtime-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![pytest](https://img.shields.io/badge/pytest-testing-0A9EDC?logo=pytest&logoColor=white)](https://pytest.org/)
+[![Playwright](https://img.shields.io/badge/Playwright-browser-2EAD33)](https://playwright.dev/python/)
+[![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-persistence-D71F00?logo=sqlalchemy&logoColor=white)](https://www.sqlalchemy.org/)
+[![Locust](https://img.shields.io/badge/Locust-performance-00A398?logo=locust&logoColor=white)](https://locust.io/)
+[![OWASP ZAP](https://img.shields.io/badge/OWASP%20ZAP-DAST-00549E?logo=zap&logoColor=white)](https://www.zaproxy.org/)
+[![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-CI-2088FF?logo=githubactions&logoColor=white)](https://github.com/features/actions)
+[![Trivy](https://img.shields.io/badge/Trivy-security-1904DA?logo=trivy&logoColor=white)](https://trivy.dev/)
+[![License](https://img.shields.io/badge/License-MIT-2EA44F?logo=opensourceinitiative&logoColor=white)](LICENSE)
+[![Security Policy](https://img.shields.io/badge/Security-Policy-6E7781?logo=github&logoColor=white)](.github/SECURITY.md)
 
 A layered Python quality-engineering framework for deterministic unit, API, contract, persistence, browser, security, and performance verification. `pytest` remains the orchestration surface; framework modules own runtime validation, HTTP policy, dependency boundaries, persistence lifecycle, browser abstractions, correlation, and privacy-aware evidence without obscuring native pytest, requests, SQLAlchemy, or Playwright behavior.
 
@@ -51,6 +47,18 @@ flowchart LR
     BROWSER --> OBS
     EXT --> OBS
     SEC --> OBS
+
+    classDef entry fill:#ddf4ff,stroke:#0969da,color:#24292f,stroke-width:1.5px;
+    classDef core fill:#f6f8fa,stroke:#57606a,color:#24292f,stroke-width:1.5px;
+    classDef gate fill:#fbefff,stroke:#8250df,color:#24292f,stroke-width:1.5px;
+    classDef evidence fill:#dafbe1,stroke:#1a7f37,color:#24292f,stroke-width:1.5px;
+    classDef security fill:#ffebe9,stroke:#cf222e,color:#24292f,stroke-width:1.5px;
+    class CHANGE entry;
+    class FAST core;
+    class BROWSER,EXT,CH,FF,WK gate;
+    class SEC security;
+    class OBS evidence;
+    linkStyle default stroke:#57606a,stroke-width:1.4px;
 ```
 
 The standard PR lane stays fast. Cross-browser multiplication is isolated in `extended.yml`, triggered by browser/framework changes, `main`, schedule, or manual dispatch. Security scanning is a separate failure domain so dependency/configuration risk is not confused with behavioral test failures.
@@ -87,6 +95,15 @@ flowchart TD
     PYTEST --> MAN[Controller-owned run manifest]
     MAN --> REPORTS[reports/]
     REPORTS --> CI[CI artifacts / summaries]
+
+    classDef entry fill:#ddf4ff,stroke:#0969da,color:#24292f,stroke-width:1.5px;
+    classDef core fill:#f6f8fa,stroke:#57606a,color:#24292f,stroke-width:1.5px;
+    classDef gate fill:#fbefff,stroke:#8250df,color:#24292f,stroke-width:1.5px;
+    classDef evidence fill:#dafbe1,stroke:#1a7f37,color:#24292f,stroke-width:1.5px;
+    class PYTEST entry;
+    class CFG,UNIT,API,DB,UI,CLIENT,MOCK,REPO,SQLITE,PAGES core;
+    class MAN,REPORTS,CI evidence;
+    linkStyle default stroke:#57606a,stroke-width:1.4px;
 ```
 
 The dependency direction is deliberate: tests state intent; framework code controls boundaries. HTTP retry behavior does not live in assertions, browser readiness does not live in sleeps, and shared diagnostic serialization does not live in xdist workers.
@@ -136,7 +153,7 @@ Python 3.11+ is supported by the CI compatibility matrix.
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate          # Windows PowerShell: .venv\Scripts\Activate.ps1
+source .venv/bin/activate          # Windows PowerShell: .venv\\Scripts\\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 python -m playwright install chromium
@@ -168,17 +185,17 @@ ruff check .
 python -m compileall -q src tests
 
 # Parallel framework-lifecycle contract
-TEST_REPORT_DIR=reports/xdist-contract \
-pytest tests/framework/test_configuration_contract.py \
-       tests/framework/test_run_manifest.py \
+TEST_REPORT_DIR=reports/xdist-contract \\
+pytest tests/framework/test_configuration_contract.py \\
+       tests/framework/test_run_manifest.py \\
        -n 2
 
 # Fast functional gate with coverage
-pytest \
-  --ignore=tests/e2e \
-  --ignore=tests/performance \
-  --ignore=tests/security \
-  --cov=src \
+pytest \\
+  --ignore=tests/e2e \\
+  --ignore=tests/performance \\
+  --ignore=tests/security \\
+  --cov=src \\
   --cov-report=term-missing
 
 # Optional local-only ZAP integration
@@ -249,7 +266,7 @@ Database tests use a session-scoped in-memory SQLite engine and short-lived SQLA
 Page abstractions expose application intent and stable state, not generic wrappers around Playwright. Prefer role/label/test-id locators and web-first assertions.
 
 ```python
-page.get_by_role("heading", name="Example Domain").wait_for()
+page.get_by_role(\"heading\", name=\"Example Domain\").wait_for()
 ```
 
 Avoid fixed readiness delays:
@@ -367,6 +384,18 @@ flowchart TD
     X1 --> E
     X2 --> E
     X3 --> E
+
+    classDef entry fill:#ddf4ff,stroke:#0969da,color:#24292f,stroke-width:1.5px;
+    classDef core fill:#f6f8fa,stroke:#57606a,color:#24292f,stroke-width:1.5px;
+    classDef gate fill:#fbefff,stroke:#8250df,color:#24292f,stroke-width:1.5px;
+    classDef evidence fill:#dafbe1,stroke:#1a7f37,color:#24292f,stroke-width:1.5px;
+    classDef security fill:#ffebe9,stroke:#cf222e,color:#24292f,stroke-width:1.5px;
+    class PR,BCHANGE entry;
+    class Q core;
+    class P311,P312,P313,C,X,X1,X2,X3 gate;
+    class S security;
+    class E evidence;
+    linkStyle default stroke:#57606a,stroke-width:1.4px;
 ```
 
 ## Failure triage
