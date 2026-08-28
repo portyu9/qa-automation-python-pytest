@@ -1,0 +1,72 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  trivy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Prepare evidence directory
+        run: mkdir -p reports/security
+      - name: Scan dependencies and repository configuration
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.74.0
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: json
+          output: reports/security/trivy.json
+          exit-code: "1"
+      - name: Publish security summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="reports/security/trivy.json"
+          summary="reports/security/summary.md"
+          if [[ ! -s "$report" ]]; then
+            printf '### Security gate\n\nTrivy did not produce a report. Inspect the scan step for setup/runtime failure.\n' | tee "$summary" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          vulnerabilities=$(jq '[.Results[]? | .Vulnerabilities[]?] | length' "$report")
+          misconfigurations=$(jq '[.Results[]? | .Misconfigurations[]?] | length' "$report")
+
+          {
+            echo '### Open-source security gate'
+            echo
+            echo '| Signal | Findings |'
+            echo '| --- | ---: |'
+            echo "| Fixed HIGH/CRITICAL vulnerabilities | ${vulnerabilities} |"
+            echo "| HIGH/CRITICAL misconfigurations | ${misconfigurations} |"
+            echo
+            echo '- Scanner: Trivy v0.74.0'
+            echo '- Scope: repository filesystem, dependency manifests/locks, and supported configuration files'
+            echo '- Policy: gated findings retain a nonzero scan result; JSON evidence is preserved for triage'
+          } | tee "$summary" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload security evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: trivy-security-evidence
+          path: reports/security/
+          if-no-files-found: ignore
+          retention-days: 14
