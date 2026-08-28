@@ -1,47 +1,111 @@
 # Framework architecture
 
-## Boundaries
+## Design objective
 
-The framework separates *test intent* from *integration mechanics*.
+The framework separates **test intent** from **execution policy**. Tests describe behavior; infrastructure modules own configuration validation, transport policy, dependency lifecycle, persistence access, browser interaction boundaries, and diagnostic persistence.
 
-- **Tests** describe behavior and assertions. They should not own URL construction, retry loops, SQL connection lifecycle, or browser locator plumbing.
-- **Domain clients** expose operations meaningful to the system under test and translate transport responses into test-facing data.
-- **Transport** (`HttpClient`) owns connection pooling, timeouts, correlation metadata, and narrowly scoped retry behavior.
-- **Repositories** own persistence access and query semantics.
-- **Pages/components** own browser selectors and interaction primitives.
-- **Configuration** is immutable after startup and validated before side effects.
-- **Fixtures/hooks** own lifecycle and composition, not business assertions.
+The dependency direction is intentionally one-way:
 
-This direction keeps dependencies pointing inward: tests depend on domain abstractions; domain abstractions depend on infrastructure; infrastructure does not import tests.
+```mermaid
+flowchart LR
+    T[Tests] --> D[Domain clients / pages / repositories]
+    D --> I[Framework infrastructure]
+    I --> R[requests / SQLAlchemy / Playwright / pytest]
+    T --> F[pytest fixtures]
+    F --> I
+    I --> E[Structured evidence]
+```
 
-## Configuration lifecycle
+Framework abstractions should model application concepts or cross-cutting policy. They should not mirror native pytest, requests, SQLAlchemy, or Playwright APIs without adding a real invariant.
 
-`TestSettings.from_env()` is the boundary between process configuration and typed framework state. Fixtures should construct it once at session scope and pass the resulting object to clients/factories. This avoids repeated environment parsing and prevents a test from accidentally mutating global configuration.
+## Configuration boundary
 
-Secrets are never represented in `.env.example`. Secret-bearing settings should be injected from a secret manager or CI secret store and must be redacted from logs.
+`TestSettings.from_env()` is the only process-environment parsing boundary for shared runtime settings. It produces immutable state and fails before network/browser/database side effects.
 
-## HTTP behavior
+`TEST_BASE_URL` must:
 
-Retries are limited to transient errors and idempotent methods. POST/PATCH operations are not retried automatically because doing so can duplicate state. If an API supports idempotency keys, a domain client can opt into a domain-specific retry strategy explicitly.
+- be an absolute HTTP(S) URL;
+- contain a valid port when a port is present;
+- not contain URL user-info/credentials;
+- not contain a query string or fragment;
+- preserve an optional path prefix.
 
-Timeouts are mandatory. An unbounded request is a test-runner resource leak.
+Authentication belongs in controlled headers/cookies/secret injection, not URL user-info. Query parameters belong to individual requests, not the framework base URL.
+
+Timeouts and retry counts are range-validated. Browser names are allowlisted. Boolean parsing is explicit rather than relying on Python truthiness.
+
+## HTTP transport policy
+
+`src/http_client.py` owns connection behavior:
+
+- one `requests.Session` per client lifecycle;
+- bounded connect and read timeouts;
+- connection pooling;
+- `X-Test-Run-Id` correlation;
+- retries only for configured transient statuses and idempotent methods;
+- deterministic session closure through context-manager semantics.
+
+Mutating operations are not made reliable by blind retry. Domain-specific idempotency should be implemented only when the API exposes an idempotency contract.
+
+## Deterministic dependency lifecycle
+
+The local Flask dependency is started by a session-scoped fixture. Readiness uses bounded TCP polling instead of a startup sleep. Teardown requests normal process termination and escalates to kill only after the cleanup deadline.
+
+Database tests use a session-scoped in-memory SQLite engine and short-lived SQLAlchemy sessions. Repository helpers own query semantics; tests own the records they assert.
+
+These boundaries keep fast tests independent of DNS, public-service availability, fixed test order, and long-lived mutable process state.
 
 ## Browser model
 
-Page objects/components should expose user-meaningful operations rather than generic wrappers around every Playwright/Selenium method. Prefer semantic locators (role, label, accessible name, stable test id). Waiting belongs at the interaction boundary and must target observable conditions; fixed sleeps are prohibited except in deliberate timing/performance tests.
+Page objects/components own stable locators and feature-level interactions. Prefer role, label, accessible name, or stable test IDs. Playwright web-first assertions are the primary synchronization mechanism.
 
-## Database model
+Fixed sleeps are prohibited as functional synchronization. If explicit polling is necessary, it must be bounded and tied to an observable condition.
 
-Repository helpers should use parameterized queries and explicit transactions. Tests should prefer disposable data and rollback/cleanup. Shared static records create ordering and parallelism hazards.
+Browser coverage is risk-based. Chromium is the primary CI gate; additional engines should be added where compatibility risk justifies the execution cost.
 
-## Contract and schema checks
+## Run-manifest lifecycle
 
-Contract fixtures are version-controlled beside the tests that consume them. Schema validation supplements behavioral assertions; it does not replace them. Breaking contract changes should be visible as reviewable artifact diffs.
+`conftest.py` registers a small pytest plugin that builds `reports/run-manifest.json`.
 
-## Parallelism
+The controller process owns the run-level artifact. With pytest-xdist, workers emit normal reports and the controller aggregates them; workers never write the shared manifest. CI explicitly exercises this topology with two xdist workers and verifies that a complete JSON manifest exists without temporary-file residue.
 
-The default assumption is parallel safety. Unique resource names should include `TEST_RUN_ID` and, where necessary, worker identity. Only tests that truly require exclusive state should carry the `serial` marker.
+The manifest records one retained outcome per node ID, including:
 
-## Observability
+- status and phase;
+- bounded duration;
+- worker identity when available;
+- deterministic artifact key;
+- run ID and non-secret runtime metadata;
+- aggregate passed/failed/skipped counts.
 
-A test run should be traceable across client logs and server telemetry using `X-Test-Run-Id`. Additional correlation IDs returned by the system should be captured in failure output. Diagnostic code must use an allowlist approach to logged headers/fields to avoid secret leakage.
+When multiple phase reports exist, the most severe outcome is retained so teardown failures cannot be hidden behind a previously successful call phase.
+
+## Diagnostic privacy
+
+Diagnostics use an allowlist-oriented model. Runtime keys with secret-like names are redacted. Diagnostic URLs preserve only origin/path: user-info, query strings, and fragments are removed before persistence. This prevents common token-in-URL patterns from entering retained CI artifacts.
+
+The run manifest is written to a temporary file and atomically renamed. An interrupted write therefore cannot leave a partial file at the final artifact path.
+
+Browser screenshots/traces and page content may still contain application-visible test data. Use synthetic data and bounded artifact retention; automatic structured redaction is not a substitute for safe test-data design.
+
+## Contract and schema ownership
+
+Version-controlled contract artifacts live beside the tests that consume them. Schema/OpenAPI validation complements semantic assertions; it does not replace them. A response can satisfy shape and still be behaviorally incorrect.
+
+## Parallelism rules
+
+Parallel execution is the default assumption for fast layers. Shared state must be avoided or namespaced by run/worker identity. Tests requiring exclusive state should be isolated explicitly rather than disabling parallelism globally.
+
+A framework helper is parallel-safe only when its lifecycle, filesystem writes, ports, and mutable data ownership remain deterministic under concurrent execution.
+
+## Extension rules
+
+New infrastructure should satisfy all of the following:
+
+1. validate external input before side effects;
+2. expose a narrow domain/policy boundary rather than a generic wrapper;
+3. have a framework-contract test for its invariant;
+4. define ownership and cleanup explicitly;
+5. remain safe under parallel execution or document deliberate serialization;
+6. emit bounded, privacy-aware diagnostics;
+7. preserve the exit status of the underlying test failure.
