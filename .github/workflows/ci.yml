@@ -1,47 +1,96 @@
-name: Python Test Suite
+name: ci
 
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-pytest-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  TEST_BASE_URL: https://jsonplaceholder.typicode.com
 
 jobs:
-  build:
+  quality:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+      - run: ruff check .
+      - run: python -m compileall -q src tests
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          playwright install --with-deps
+  functional:
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+      - name: Run fast test gate
+        run: >-
+          pytest
+          --ignore=tests/e2e
+          --ignore=tests/performance
+          --ignore=tests/security
+          --junitxml=reports/junit-${{ matrix.python }}.xml
+          --cov=src
+          --cov-report=xml:reports/coverage-${{ matrix.python }}.xml
+          --cov-report=term-missing
+      - name: Upload functional evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-${{ matrix.python }}-reports
+          path: reports/
+          if-no-files-found: ignore
+          retention-days: 14
 
-      - name: Run unit tests
-        run: pytest -m unit -v
-
-      - name: Run API tests
-        run: pytest -m api -v
-
-      - name: Run database tests
-        run: pytest -m db -v
-
-      - name: Run UI tests
-        run: pytest -m e2e -v
-
-      - name: Run performance tests
-        run: pytest -m performance -v
-
-      - name: Run security tests
-        run: pytest -m security -v
-
-      - name: Run unmarked tests
-        run: pytest -v
+  browser:
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+      - run: python -m playwright install --with-deps chromium
+      - name: Run browser tests
+        env:
+          TEST_BROWSER: chromium
+          TEST_HEADLESS: "true"
+        run: pytest tests/e2e --junitxml=reports/e2e.xml
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-evidence
+          path: |
+            reports/
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14

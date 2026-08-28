@@ -1,0 +1,26 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [".venv", "reports", "artifacts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+# pytest.ini remains the single source of execution policy. This section is
+# intentionally empty to avoid split configuration ownership.
+
+[tool.coverage.run]
+branch = true
+source = ["src"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 70
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+]
