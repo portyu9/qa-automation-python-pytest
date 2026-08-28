@@ -4,6 +4,21 @@
 [![Extended](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/extended.yml/badge.svg)](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/extended.yml)
 [![Security](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/security.yml/badge.svg)](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/security.yml)
 
+[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-3776AB)](https://www.python.org/)
+[![pytest](https://img.shields.io/badge/pytest-9.x-0A9EDC)](https://pytest.org/)
+[![Playwright](https://img.shields.io/badge/Playwright-1.62-2EAD33)](https://playwright.dev/python/)
+[![Requests](https://img.shields.io/badge/Requests-2.32-6E7781)](https://requests.readthedocs.io/)
+[![Flask](https://img.shields.io/badge/Flask-3.1-6E7781)](https://flask.palletsprojects.com/)
+[![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-D71F00)](https://www.sqlalchemy.org/)
+[![SQLite](https://img.shields.io/badge/SQLite-persistence-003B57)](https://www.sqlite.org/)
+[![Locust](https://img.shields.io/badge/Locust-2.x-00A398)](https://locust.io/)
+[![OWASP ZAP](https://img.shields.io/badge/OWASP%20ZAP-local%20DAST-00549E)](https://www.zaproxy.org/)
+[![Ruff](https://img.shields.io/badge/Ruff-static%20analysis-D7FF64)](https://docs.astral.sh/ruff/)
+[![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-CI-2088FF)](https://github.com/features/actions)
+[![Trivy](https://img.shields.io/badge/Trivy-security%20scan-1904DA)](https://trivy.dev/)
+[![License](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE)
+[![Security Policy](https://img.shields.io/badge/Security-Policy-6E7781)](.github/SECURITY.md)
+
 A layered Python quality-engineering framework for deterministic unit, API, contract, persistence, browser, security, and performance verification. `pytest` remains the orchestration surface; framework modules own runtime validation, HTTP policy, dependency boundaries, persistence lifecycle, browser abstractions, correlation, and privacy-aware evidence without obscuring native pytest, requests, SQLAlchemy, or Playwright behavior.
 
 > [!IMPORTANT]
