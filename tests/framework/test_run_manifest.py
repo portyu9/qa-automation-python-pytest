@@ -12,13 +12,16 @@ def test_safe_slug_is_deterministic_and_filesystem_friendly() -> None:
     )
 
 
-def test_redaction_removes_secret_fields_and_url_user_info() -> None:
+def test_redaction_removes_secret_fields_and_url_sensitive_components() -> None:
     assert redact_mapping({"api_key": "secret", "browser": "chromium"}) == {
         "api_key": "<redacted>",
         "browser": "chromium",
     }
-    assert redact_url("https://user:password@example.com/api?q=1") == (
-        "https://example.com/api?q=1"
+    assert redact_url(
+        "https://user:password@example.com/api?access_token=secret#fragment"
+    ) == "https://example.com/api"
+    assert redact_url("http://[::1]:8080/path?token=secret") == (
+        "http://[::1]:8080/path"
     )
 
 
