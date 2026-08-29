@@ -12,6 +12,7 @@ from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.remote.webdriver import WebDriver
 
 from src.config import TestSettings
+from src.run_manifest import redact_text
 
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -57,13 +58,15 @@ def capture_failure_evidence(
     """Write bounded browser diagnostics for a failed test.
 
     The metadata intentionally excludes cookies, local/session storage,
-    response bodies, page source, and URL user-info/query/fragment. Those
-    surfaces commonly contain credentials or customer data and should only be
-    collected by an application-specific evidence policy.
+    response bodies, page source, and URL user-info/query/fragment. Test labels
+    are redacted/bounded before persistence because parameter values can carry
+    sensitive material. Richer surfaces should only be collected by an
+    application-specific evidence policy.
     """
     evidence_dir = report_dir / "browser"
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    stem = _SAFE_NAME.sub("-", nodeid).strip("-")[:120] or "browser-test"
+    safe_nodeid = redact_text(nodeid)
+    stem = _SAFE_NAME.sub("-", safe_nodeid).strip("-")[:120] or "browser-test"
 
     screenshot_name = f"{stem}.png"
     screenshot_path = evidence_dir / screenshot_name
@@ -76,12 +79,12 @@ def capture_failure_evidence(
     metadata = {
         "schemaVersion": 1,
         "runId": run_id,
-        "test": nodeid,
+        "test": safe_nodeid,
         "currentUrl": _redact_url(_safe_current_url(driver)),
         "screenshot": screenshot_name if screenshot_written else None,
     }
     (evidence_dir / f"{stem}.json").write_text(
-        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        json.dumps(metadata, indent=2, sort_keys=True, allow_nan=False) + "\n",
         encoding="utf-8",
     )
 
