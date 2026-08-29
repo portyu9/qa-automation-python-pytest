@@ -90,9 +90,7 @@ class TestSettings:
 
         run_id = os.getenv("TEST_RUN_ID", "").strip() or str(uuid4())
         return cls(
-            base_url=_base_url(
-                "TEST_BASE_URL", "https://jsonplaceholder.typicode.com"
-            ),
+            base_url=_base_url("TEST_BASE_URL", "http://127.0.0.1:5000"),
             ui_base_url=_base_url(
                 "TEST_UI_BASE_URL", "http://127.0.0.1:5000/ui"
             ),
