@@ -40,6 +40,13 @@ def test_list_posts_rejects_non_collection_payload(mocker) -> None:
 
 
 @pytest.mark.api
+def test_http_client_rejects_absolute_request_target(local_api_settings) -> None:
+    with HttpClient(local_api_settings) as transport:
+        with pytest.raises(ValueError, match="relative to the validated TEST_BASE_URL"):
+            transport.request("GET", "https://example.test/posts")
+
+
+@pytest.mark.api
 def test_list_posts_from_local_mock_server(run_mock_api, local_api_settings) -> None:
     with HttpClient(local_api_settings) as transport:
         posts = PostsClient(transport).list_posts()
