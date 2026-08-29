@@ -153,7 +153,7 @@ Python 3.11+ is supported by the CI compatibility matrix.
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate          # Windows PowerShell: .venv\\Scripts\\Activate.ps1
+source .venv/bin/activate          # Windows PowerShell: .venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 python -m playwright install chromium
@@ -185,17 +185,17 @@ ruff check .
 python -m compileall -q src tests
 
 # Parallel framework-lifecycle contract
-TEST_REPORT_DIR=reports/xdist-contract \\
-pytest tests/framework/test_configuration_contract.py \\
-       tests/framework/test_run_manifest.py \\
+TEST_REPORT_DIR=reports/xdist-contract \
+pytest tests/framework/test_configuration_contract.py \
+       tests/framework/test_run_manifest.py \
        -n 2
 
 # Fast functional gate with coverage
-pytest \\
-  --ignore=tests/e2e \\
-  --ignore=tests/performance \\
-  --ignore=tests/security \\
-  --cov=src \\
+pytest \
+  --ignore=tests/e2e \
+  --ignore=tests/performance \
+  --ignore=tests/security \
+  --cov=src \
   --cov-report=term-missing
 
 # Optional local-only ZAP integration
@@ -266,7 +266,7 @@ Database tests use a session-scoped in-memory SQLite engine and short-lived SQLA
 Page abstractions expose application intent and stable state, not generic wrappers around Playwright. Prefer role/label/test-id locators and web-first assertions.
 
 ```python
-page.get_by_role(\"heading\", name=\"Example Domain\").wait_for()
+page.get_by_role("heading", name="Example Domain").wait_for()
 ```
 
 Avoid fixed readiness delays:
