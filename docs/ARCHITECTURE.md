@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This repository separates test intent from reusable execution policy. `pytest` remains the orchestration engine; framework modules own boundaries that should behave consistently across suites: configuration, HTTP transport, persistence lifecycle, Selenium driver creation, synchronization, diagnostics, and run correlation.
+This repository separates test intent from reusable execution policy. `pytest` remains the orchestration engine; framework modules own boundaries that should behave consistently across suites: configuration, HTTP transport, persistence lifecycle, Selenium driver creation, synchronization, diagnostics, run correlation, and focused capability selection.
 
 The architecture favors explicit ownership over generic abstraction. A wrapper is useful only when it enforces a durable contract or centralizes behavior that would otherwise drift between tests.
 
@@ -18,12 +18,14 @@ flowchart TD
     FIX --> DRIVER[Selenium driver factory]
     FIX --> DB[SQLAlchemy engine/session]
     FIX --> MOCK[Local Flask fixture]
+    TESTS --> CAP[pytest capability hooks]
     PAGES --> DRIVER
     API --> HTTP[HTTP client policy]
     HTTP --> CFG
     REPO --> DB
     TESTS --> MAN[Run manifest plugin]
     DRIVER --> DIAG[Failure evidence]
+    CAP --> PYTEST[Native pytest collection/reporting]
     MAN --> REPORTS[reports/]
     DIAG --> REPORTS
 
@@ -32,8 +34,8 @@ flowchart TD
     classDef boundary fill:#dafbe1,stroke:#1a7f37,color:#24292f;
     classDef evidence fill:#fff8c5,stroke:#9a6700,color:#24292f;
     class TESTS intent;
-    class FIX,CFG,PAGES,API,REPO,HTTP policy;
-    class DRIVER,DB,MOCK boundary;
+    class FIX,CFG,PAGES,API,REPO,HTTP,CAP policy;
+    class DRIVER,DB,MOCK,PYTEST boundary;
     class MAN,DIAG,REPORTS evidence;
 ```
 
@@ -46,15 +48,33 @@ Tests may depend on framework policy. Framework policy must not depend on indivi
 The configuration boundary enforces:
 
 - absolute HTTP(S) API and UI URLs;
-- valid host and port semantics;
+- valid host and explicit-port semantics;
 - rejection of URL user-info, query strings, and fragments;
-- positive connect/read/browser timeout budgets;
+- finite positive connect/read/browser timeout budgets;
 - non-negative retry budgets;
 - explicit Chrome/Firefox browser selection;
 - strict boolean parsing;
-- generated run identity when CI does not provide one.
+- generated run identity when CI does not provide one;
+- supplied run identities limited to 1–128 ASCII letters, digits, dots, underscores, colons, or hyphens.
+
+Rejecting `NaN`, infinities, malformed ports, and unsafe correlation tokens at the settings boundary prevents values that parse successfully but cannot behave safely as deadlines, URLs, artifact keys, or headers from reaching execution layers.
 
 API and UI targets are separate because they frequently have different routing, authentication, and environment ownership. A browser test should never inherit an API base URL accidentally.
+
+## Pytest extension boundary
+
+`src/pytest_capabilities.py` adds focused execution without replacing pytest collection, node IDs, markers, reports, or plugin behavior.
+
+The extension contract is deliberately small:
+
+- `--capability NAME` is repeatable;
+- `capability(name)` is registered dynamically so strict-marker mode remains authoritative;
+- filtering happens after native collection by marking nonselected tests skipped rather than constructing a second collection model;
+- a supplied capability name must exist in the collected suite;
+- unknown capability names raise `pytest.UsageError` instead of producing an all-skipped successful run;
+- the normal terminal header records the active focused selection.
+
+Focused capability execution is an operator convenience. It does not redefine required CI coverage or permit an unknown selector to create false-green evidence.
 
 ## HTTP boundary
 
@@ -175,7 +195,7 @@ Adding parallelism before establishing these contracts would create faster nonde
 
 Static repository security and active runtime security are separate domains.
 
-- Trivy examines repository/dependency/configuration risk in `security.yml`.
+- Trivy examines vulnerability, misconfiguration, and committed-secret risk in `security.yml`.
 - OWASP ZAP integration is optional and hard-bound to a loopback target in the committed tests.
 
 The loopback restriction prevents a configuration typo from turning routine test execution into active scanning of an unintended host. Real-environment DAST requires a separate approved-target control.
