@@ -23,6 +23,7 @@ def test_settings_normalize_url_and_boolean(monkeypatch):
     ("name", "value"),
     [
         ("TEST_BASE_URL", "localhost:8080"),
+        ("TEST_BASE_URL", "https://:443"),
         ("TEST_BASE_URL", "https://example.test:not-a-port"),
         ("TEST_BASE_URL", "https://user:password@example.test"),
         ("TEST_BASE_URL", "https://example.test/api?access_token=secret"),
