@@ -109,7 +109,8 @@ def run_mock_api() -> Generator[None, None, None]:
 
 
 @pytest.fixture
-def api_base_url(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
-    """Point API-client tests at the local deterministic mock service."""
-    monkeypatch.setenv("API_BASE_URL", "http://localhost:5000")
-    yield
+def local_api_settings(monkeypatch: pytest.MonkeyPatch) -> RuntimeSettings:
+    """Return validated settings that target the deterministic loopback API."""
+    monkeypatch.setenv("TEST_BASE_URL", "http://127.0.0.1:5000")
+    monkeypatch.setenv("TEST_RUN_ID", "local-api-contract")
+    return RuntimeSettings.from_env()
