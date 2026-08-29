@@ -70,7 +70,7 @@ The normal pull-request lane separates quality, functional, browser, security, a
 | Concern | Framework contract |
 | --- | --- |
 | Configuration | Parse external values once, validate type/range/URL semantics, expose immutable settings. |
-| API targets | Absolute HTTP(S), valid port, no URL credentials, query string, or fragment. |
+| API targets | Independently configurable; the committed default is repository-local and deterministic; absolute HTTP(S), valid port, no URL credentials, query string, or fragment. |
 | UI targets | Independently configurable from API targets; the committed default is a repository-local deterministic fixture. |
 | HTTP policy | Connection/read budgets, pooling, run correlation, retries for safe/idempotent methods only. |
 | Test isolation | Mutable state belongs to the test or fixture scope that creates it. |
@@ -245,7 +245,7 @@ pytest tests/security -m security
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `TEST_BASE_URL` | API target used by framework HTTP clients | `https://jsonplaceholder.typicode.com` |
+| `TEST_BASE_URL` | API target used by framework HTTP clients | `http://127.0.0.1:5000` |
 | `TEST_UI_BASE_URL` | Browser target | `http://127.0.0.1:5000/ui` |
 | `TEST_BROWSER` | Selenium browser: `chrome` or `firefox` | `chrome` |
 | `TEST_HEADLESS` | Browser headless mode | `true` |
@@ -280,11 +280,11 @@ The browser layer follows these rules:
 > [!WARNING]
 > Fixed sleeps are not synchronization. Increasing a global timeout to conceal an unknown readiness condition converts an attributable failure into a slower ambiguous failure.
 
-## Deterministic browser fixture
+## Deterministic local fixture
 
-`mock/server.py` exposes a small local UI under `/ui` and `/ui/details`. The committed browser test exercises navigation and stable `data-testid` contracts against this local application. This keeps framework CI independent of public websites, vendor documentation availability, DNS, and unrelated content changes.
+`mock/server.py` exposes repository-owned API endpoints (`/posts`, `/posts/<id>`, `/health`) and browser routes (`/ui`, `/ui/details`). The committed API integration and browser workflow tests exercise the same controlled application boundary. This keeps required framework CI independent of public websites, public APIs, vendor availability, DNS, and unrelated content changes.
 
-When adopting the framework for an application, set `TEST_UI_BASE_URL` to the intended environment and replace the fixture-specific page objects/tests with domain flows. Keep the same driver, wait, configuration, evidence, and teardown policies.
+When adopting the framework for an application, set `TEST_BASE_URL` and `TEST_UI_BASE_URL` to the intended environments and replace fixture-specific API/page contracts with domain flows. Keep the same transport, driver, wait, configuration, evidence, and teardown policies.
 
 ## Layer selection
 
