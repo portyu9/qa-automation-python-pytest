@@ -16,18 +16,19 @@
 [![License](https://img.shields.io/badge/License-MIT-2EA44F?logo=opensourceinitiative&logoColor=white)](LICENSE)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-24292F?logo=github&logoColor=white)](.github/SECURITY.md)
 
-A layered Python quality-engineering framework for deterministic **unit, API, contract, persistence, browser, security, and performance** verification. `pytest` remains the orchestration surface; framework code exists only where a durable policy needs a single owner: configuration, HTTP transport, database lifecycle, WebDriver construction, synchronization, run correlation, and privacy-aware evidence.
+A layered Python quality-engineering framework for deterministic **unit, API, contract, persistence, browser, security, and performance** verification. `pytest` remains the orchestration surface; framework code exists only where a durable policy needs a single owner: configuration, HTTP transport, database lifecycle, WebDriver construction, synchronization, run correlation, privacy-aware evidence, and optional capability-focused collection.
 
 > [!IMPORTANT]
 > The governing principle is **failure attribution before test volume**. A failed run should identify the first broken boundary—configuration, fixture lifecycle, transport, protocol, persistence, browser behavior, security policy, documentation contract, or external infrastructure—without forcing the reader to reverse-engineer the framework.
 
-**Read by intent:** [capabilities](#capability-map) · [architecture](#architecture) · [quick start](#quick-start) · [runtime policy](#runtime-configuration) · [browser policy](#selenium-browser-policy) · [CI/evidence](#ci-and-evidence) · [dependency maintenance](#dependency-maintenance) · [failure triage](#failure-triage)
+**Read by intent:** [capabilities](#capability-map) · [architecture](#architecture) · [quick start](#quick-start) · [pytest-native surface](#pytest-native-capability-surface) · [runtime policy](#runtime-configuration) · [browser policy](#selenium-browser-policy) · [CI/evidence](#ci-and-evidence) · [dependency maintenance](#dependency-maintenance) · [failure triage](#failure-triage)
 
 ## Capability map
 
 | Validation plane | What it proves | Default execution | Primary evidence |
 | --- | --- | --- | --- |
 | Fast CI | Unit, API, contract, persistence, framework invariants | Python 3.11 / 3.12 / 3.13 | JUnit, coverage XML, run manifest |
+| Native pytest surface | Parametrization, fixtures, marks, warnings/exceptions, mocking, asyncio, focused selection | Normal pytest collection | Native node IDs + pytest reports |
 | Browser CI | Critical Chrome workflow behavior | Selenium + headless Chrome + local fixture | JUnit, manifest, bounded diagnostics |
 | Extended browser | Engine compatibility | Chrome + Firefox | Per-browser JUnit + summaries |
 | Security | Dependency and repository-configuration risk | Trivy filesystem scan | JSON findings + Markdown summary |
@@ -39,11 +40,13 @@ A layered Python quality-engineering framework for deterministic **unit, API, co
 
 ```mermaid
 flowchart TD
-    PYTEST[pytest orchestration] --> CFG[TestSettings]
+    PYTEST[pytest orchestration] --> SELECT[Optional capability selector]
+    PYTEST --> CFG[TestSettings]
     PYTEST --> UNIT[Unit / framework contracts]
     PYTEST --> API[API / schema tests]
     PYTEST --> DB[Persistence tests]
     PYTEST --> UI[Selenium tests]
+    SELECT --> UNIT
     API --> HTTP[HTTP client policy]
     API --> FIX[Repository-local Flask fixture]
     UI --> DRIVER[WebDriver factory]
@@ -61,7 +64,7 @@ flowchart TD
     classDef boundary fill:#dafbe1,stroke:#1a7f37,color:#24292f,stroke-width:1.5px;
     classDef evidence fill:#fff8c5,stroke:#9a6700,color:#24292f,stroke-width:1.5px;
     class PYTEST entry;
-    class CFG,UNIT,API,DB,HTTP,REPO,SQLITE core;
+    class SELECT,CFG,UNIT,API,DB,HTTP,REPO,SQLITE core;
     class UI,DRIVER,PAGE,FIX boundary;
     class MAN,DIAG,REPORTS evidence;
     linkStyle default stroke:#57606a,stroke-width:1.4px;
@@ -75,6 +78,8 @@ The architecture is intentionally asymmetric: tests own **intent**, fixtures own
 | --- | --- |
 | Configuration | Parse external values once; reject unsafe URL/type/range values before side effects. |
 | Deterministic targets | Committed API/UI defaults are repository-local; public services are never required for framework health. |
+| Pytest ownership | Native parametrization, fixtures, marks, reports, warnings/exceptions, plugins, and node IDs remain visible. |
+| Focused execution | `--capability` is opt-in collection filtering; without it, normal full-suite semantics are unchanged. |
 | HTTP policy | Pooling, connect/read budgets, correlation, and bounded retries for safe/idempotent methods only. |
 | Persistence | The owner that creates an engine/session closes or disposes it deterministically. |
 | Browser lifecycle | One WebDriver session per browser test; teardown always quits the driver. |
@@ -117,10 +122,12 @@ A requirement belongs at the **lowest layer that can conclusively prove it**.
 │   ├── config.py
 │   ├── db.py
 │   ├── http_client.py
+│   ├── pytest_capabilities.py
 │   ├── run_manifest.py
 │   ├── pages/
 │   └── repositories/
 ├── tests/{api,db,e2e,framework,performance,security,unit}/
+├── tests/framework/test_pytest_capabilities.py
 ├── .github/workflows/{ci,docs,extended,security}.yml
 ├── conftest.py
 ├── pytest.ini
@@ -147,6 +154,13 @@ TEST_BROWSER=chrome pytest tests/e2e
 TEST_BROWSER=firefox pytest tests/e2e
 ```
 
+Run a focused native-capability slice without changing default collection behavior:
+
+```bash
+pytest tests/framework/test_pytest_capabilities.py --capability=fixtures
+pytest tests/framework/test_pytest_capabilities.py --capability=asyncio --capability=mocking
+```
+
 <details>
 <summary><strong>Command reference</strong></summary>
 
@@ -158,11 +172,28 @@ python .github/scripts/validate_readme.py
 pytest --ignore=tests/e2e --ignore=tests/performance --ignore=tests/security \
   --cov=src --cov-report=term-missing
 
+pytest tests/framework/test_pytest_capabilities.py --capability=parametrization
 TEST_BROWSER=chrome pytest tests/e2e -m smoke
 pytest tests/security -m security
 ```
 
 </details>
+
+## Pytest-native capability surface
+
+`src/pytest_capabilities.py` is a deliberately small extension layer. It adds one repeatable `--capability NAME` option, dynamically registers the strict `capability(name)` marker, applies selection after pytest has built the collection, and reports the active slice in pytest's normal terminal header. It does **not** replace pytest discovery, node IDs, marks, fixture resolution, or reporting.
+
+`tests/framework/test_pytest_capabilities.py` keeps representative first-class pytest behavior executable:
+
+- parameter matrices with stable IDs and `pytest.approx`;
+- exception and warning contracts through `pytest.raises` and `pytest.warns`;
+- isolated built-in fixtures including `tmp_path`, `monkeypatch`, `capsys`, and `caplog`;
+- `pytest-mock` spies that preserve real behavior while asserting calls;
+- `pytest-asyncio` native async test execution;
+- named capability marks for targeted troubleshooting or teaching without creating a second test-discovery system.
+
+> [!IMPORTANT]
+> Capability selection is an **operator convenience**, not a coverage definition. Required CI still runs the intended full gates. A narrow local slice must never be mistaken for proof that unrelated layers are healthy.
 
 ## Runtime configuration
 
@@ -233,6 +264,7 @@ Dependabot version updates complement, rather than replace, vulnerability scanni
 
 | Signal | First interpretation |
 | --- | --- |
+| Capability selection/discovery | Marker/selector contract; confirm intended slice before debugging test logic |
 | Configuration contract | Invalid framework/runtime input |
 | Local fixture startup | Repository-owned service lifecycle |
 | HTTP transport | Connectivity/timeout/retry policy |
@@ -248,6 +280,7 @@ Dependabot version updates complement, rather than replace, vulnerability scanni
 ## Explicit anti-patterns
 
 - required CI against public demo sites or APIs;
+- replacing pytest collection/reporting with a custom framework merely to group tests;
 - browser setup for behavior that can be proven below the UI;
 - fixed sleeps or mixed implicit/explicit waits;
 - blanket retries, especially around mutations;
