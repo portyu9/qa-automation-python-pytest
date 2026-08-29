@@ -11,9 +11,11 @@ from collections.abc import Generator
 from pathlib import Path
 
 import pytest
+from selenium.webdriver.remote.webdriver import WebDriver
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from src.browser import capture_failure_evidence, create_driver
 from src.config import TestSettings as RuntimeSettings
 from src.db import get_engine, init_db
 from src.run_manifest import RunManifest
@@ -56,6 +58,15 @@ def pytest_configure(config: pytest.Config) -> None:
         config.pluginmanager.register(_RunManifestPlugin(config), plugin_name)
 
 
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[object]):
+    """Expose phase reports to fixtures without replacing pytest's report model."""
+    del call
+    outcome = yield
+    report = outcome.get_result()
+    setattr(item, f"rep_{report.when}", report)
+
+
 def _wait_for_port(host: str, port: int, timeout_seconds: float = 5.0) -> None:
     """Wait for a TCP listener with a bounded deadline instead of a fixed sleep."""
     deadline = time.monotonic() + timeout_seconds
@@ -95,7 +106,7 @@ def db_session(db_engine: Engine) -> Generator[Session, None, None]:
 
 @pytest.fixture(scope="session")
 def run_mock_api() -> Generator[None, None, None]:
-    """Run the local Flask mock API for the duration of the test session."""
+    """Run the repository-local Flask fixture for the test session."""
     script_path = Path(__file__).parent / "mock" / "server.py"
     env = os.environ.copy()
     proc = subprocess.Popen([sys.executable, str(script_path)], env=env)
@@ -118,3 +129,23 @@ def local_api_settings(monkeypatch: pytest.MonkeyPatch) -> RuntimeSettings:
     monkeypatch.setenv("TEST_BASE_URL", "http://127.0.0.1:5000")
     monkeypatch.setenv("TEST_RUN_ID", "local-api-contract")
     return RuntimeSettings.from_env()
+
+
+@pytest.fixture
+def driver(run_mock_api: None, request: pytest.FixtureRequest) -> Generator[WebDriver, None, None]:
+    """Own one isolated Selenium WebDriver session per browser test."""
+    del run_mock_api
+    settings = RuntimeSettings.from_env()
+    browser = create_driver(settings)
+    try:
+        yield browser
+    finally:
+        call_report = getattr(request.node, "rep_call", None)
+        if call_report is not None and call_report.failed:
+            capture_failure_evidence(
+                browser,
+                report_dir=Path(os.getenv("TEST_REPORT_DIR", "reports")),
+                nodeid=request.node.nodeid,
+                run_id=settings.run_id,
+            )
+        browser.quit()
