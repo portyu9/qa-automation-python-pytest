@@ -10,7 +10,7 @@ from uuid import uuid4
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
-_SUPPORTED_BROWSERS = {"chromium", "firefox", "webkit"}
+_SUPPORTED_BROWSERS = {"chrome", "firefox"}
 
 
 def _positive_float(name: str, default: float) -> float:
@@ -71,8 +71,10 @@ class TestSettings:
     """Immutable settings shared by test infrastructure components."""
 
     base_url: str
+    ui_base_url: str
     browser: str
     headless: bool
+    browser_timeout_seconds: float
     connect_timeout_seconds: float
     read_timeout_seconds: float
     retry_total: int
@@ -80,7 +82,7 @@ class TestSettings:
 
     @classmethod
     def from_env(cls) -> "TestSettings":
-        browser = os.getenv("TEST_BROWSER", "chromium").strip().lower()
+        browser = os.getenv("TEST_BROWSER", "chrome").strip().lower()
         if browser not in _SUPPORTED_BROWSERS:
             raise ValueError(
                 f"TEST_BROWSER must be one of {sorted(_SUPPORTED_BROWSERS)}, got {browser!r}"
@@ -91,8 +93,14 @@ class TestSettings:
             base_url=_base_url(
                 "TEST_BASE_URL", "https://jsonplaceholder.typicode.com"
             ),
+            ui_base_url=_base_url(
+                "TEST_UI_BASE_URL", "http://127.0.0.1:5000/ui"
+            ),
             browser=browser,
             headless=_boolean("TEST_HEADLESS", True),
+            browser_timeout_seconds=_positive_float(
+                "TEST_BROWSER_TIMEOUT_SECONDS", 10.0
+            ),
             connect_timeout_seconds=_positive_float(
                 "TEST_CONNECT_TIMEOUT_SECONDS", 5.0
             ),
