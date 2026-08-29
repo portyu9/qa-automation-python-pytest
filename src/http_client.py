@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -51,7 +52,11 @@ class HttpClient:
         headers: Mapping[str, str] | None = None,
         **kwargs: Any,
     ) -> requests.Response:
-        url = path if path.startswith(("http://", "https://")) else f"{self.settings.base_url}/{path.lstrip('/')}"
+        parsed = urlparse(path)
+        if parsed.scheme or parsed.netloc:
+            raise ValueError("request path must be relative to the validated TEST_BASE_URL")
+
+        url = f"{self.settings.base_url}/{path.lstrip('/')}"
         kwargs.setdefault(
             "timeout",
             (
