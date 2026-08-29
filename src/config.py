@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 import os
+import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -11,6 +13,7 @@ from uuid import uuid4
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
 _SUPPORTED_BROWSERS = {"chrome", "firefox"}
+_RUN_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 
 def _positive_float(name: str, default: float) -> float:
@@ -19,8 +22,8 @@ def _positive_float(name: str, default: float) -> float:
         value = float(raw)
     except ValueError as exc:
         raise ValueError(f"{name} must be numeric, got {raw!r}") from exc
-    if value <= 0:
-        raise ValueError(f"{name} must be > 0, got {value}")
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a finite value > 0, got {raw!r}")
     return value
 
 
@@ -54,15 +57,28 @@ def _base_url(name: str, default: str) -> str:
         raise ValueError(f"{name} must be an absolute http(s) URL with a hostname, got {value!r}")
 
     try:
-        _ = parsed.port
+        port = parsed.port
     except ValueError as exc:
         raise ValueError(f"{name} contains an invalid port, got {value!r}") from exc
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError(f"{name} port must be between 1 and 65535")
 
     if parsed.username is not None or parsed.password is not None:
         raise ValueError(f"{name} must not contain URL credentials")
     if parsed.query or parsed.fragment:
         raise ValueError(f"{name} must not contain a query string or fragment")
 
+    return value
+
+
+def _run_id() -> str:
+    value = os.getenv("TEST_RUN_ID", "").strip()
+    if not value:
+        return str(uuid4())
+    if not _RUN_ID.fullmatch(value):
+        raise ValueError(
+            "TEST_RUN_ID must be 1-128 ASCII letters, digits, dots, underscores, colons, or hyphens"
+        )
     return value
 
 
@@ -88,7 +104,6 @@ class TestSettings:
                 f"TEST_BROWSER must be one of {sorted(_SUPPORTED_BROWSERS)}, got {browser!r}"
             )
 
-        run_id = os.getenv("TEST_RUN_ID", "").strip() or str(uuid4())
         return cls(
             base_url=_base_url("TEST_BASE_URL", "http://127.0.0.1:5000"),
             ui_base_url=_base_url(
@@ -104,5 +119,5 @@ class TestSettings:
             ),
             read_timeout_seconds=_positive_float("TEST_READ_TIMEOUT_SECONDS", 15.0),
             retry_total=_non_negative_int("TEST_RETRY_TOTAL", 2),
-            run_id=run_id,
+            run_id=_run_id(),
         )
