@@ -1,111 +1,228 @@
-# Framework architecture
+# Architecture
 
-## Design objective
+## Purpose
 
-The framework separates **test intent** from **execution policy**. Tests describe behavior; infrastructure modules own configuration validation, transport policy, dependency lifecycle, persistence access, browser interaction boundaries, and diagnostic persistence.
+This repository separates test intent from reusable execution policy. `pytest` remains the orchestration engine; framework modules own boundaries that should behave consistently across suites: configuration, HTTP transport, persistence lifecycle, Selenium driver creation, synchronization, diagnostics, and run correlation.
 
-The dependency direction is intentionally one-way:
+The architecture favors explicit ownership over generic abstraction. A wrapper is useful only when it enforces a durable contract or centralizes behavior that would otherwise drift between tests.
+
+## Dependency direction
 
 ```mermaid
-flowchart LR
-    T[Tests] --> D[Domain clients / pages / repositories]
-    D --> I[Framework infrastructure]
-    I --> R[requests / SQLAlchemy / Playwright / pytest]
-    T --> F[pytest fixtures]
-    F --> I
-    I --> E[Structured evidence]
+flowchart TD
+    TESTS[Test modules] --> FIX[pytest fixtures]
+    TESTS --> PAGES[Page objects]
+    TESTS --> API[API client]
+    TESTS --> REPO[Repositories]
+    FIX --> CFG[TestSettings]
+    FIX --> DRIVER[Selenium driver factory]
+    FIX --> DB[SQLAlchemy engine/session]
+    FIX --> MOCK[Local Flask fixture]
+    PAGES --> DRIVER
+    API --> HTTP[HTTP client policy]
+    HTTP --> CFG
+    REPO --> DB
+    TESTS --> MAN[Run manifest plugin]
+    DRIVER --> DIAG[Failure evidence]
+    MAN --> REPORTS[reports/]
+    DIAG --> REPORTS
+
+    classDef intent fill:#ddf4ff,stroke:#0969da,color:#24292f;
+    classDef policy fill:#f6f8fa,stroke:#57606a,color:#24292f;
+    classDef boundary fill:#dafbe1,stroke:#1a7f37,color:#24292f;
+    classDef evidence fill:#fff8c5,stroke:#9a6700,color:#24292f;
+    class TESTS intent;
+    class FIX,CFG,PAGES,API,REPO,HTTP policy;
+    class DRIVER,DB,MOCK boundary;
+    class MAN,DIAG,REPORTS evidence;
 ```
 
-Framework abstractions should model application concepts or cross-cutting policy. They should not mirror native pytest, requests, SQLAlchemy, or Playwright APIs without adding a real invariant.
+Tests may depend on framework policy. Framework policy must not depend on individual test cases.
 
 ## Configuration boundary
 
-`TestSettings.from_env()` is the only process-environment parsing boundary for shared runtime settings. It produces immutable state and fails before network/browser/database side effects.
+`src/config.py` parses environment values into immutable `TestSettings`. Validation happens before network, database, or browser side effects.
 
-`TEST_BASE_URL` must:
+The configuration boundary enforces:
 
-- be an absolute HTTP(S) URL;
-- contain a valid port when a port is present;
-- not contain URL user-info/credentials;
-- not contain a query string or fragment;
-- preserve an optional path prefix.
+- absolute HTTP(S) API and UI URLs;
+- valid host and port semantics;
+- rejection of URL user-info, query strings, and fragments;
+- positive connect/read/browser timeout budgets;
+- non-negative retry budgets;
+- explicit Chrome/Firefox browser selection;
+- strict boolean parsing;
+- generated run identity when CI does not provide one.
 
-Authentication belongs in controlled headers/cookies/secret injection, not URL user-info. Query parameters belong to individual requests, not the framework base URL.
+API and UI targets are separate because they frequently have different routing, authentication, and environment ownership. A browser test should never inherit an API base URL accidentally.
 
-Timeouts and retry counts are range-validated. Browser names are allowlisted. Boolean parsing is explicit rather than relying on Python truthiness.
+## HTTP boundary
 
-## HTTP transport policy
+`src/http_client.py` owns reusable request behavior:
 
-`src/http_client.py` owns connection behavior:
+- persistent connection pooling;
+- separate connection and response-read deadlines;
+- bounded retries for explicitly safe/idempotent methods;
+- transient-status policy;
+- run correlation;
+- deterministic session close behavior.
 
-- one `requests.Session` per client lifecycle;
-- bounded connect and read timeouts;
-- connection pooling;
-- `X-Test-Run-Id` correlation;
-- retries only for configured transient statuses and idempotent methods;
-- deterministic session closure through context-manager semantics.
+Assertions remain in tests. The transport layer does not translate application failures into success or retry mutating operations indiscriminately.
 
-Mutating operations are not made reliable by blind retry. Domain-specific idempotency should be implemented only when the API exposes an idempotency contract.
+## Persistence boundary
 
-## Deterministic dependency lifecycle
+`src/db.py` provides deterministic persistence infrastructure for framework tests. Ownership follows a simple rule: the scope that creates a resource closes it.
 
-The local Flask dependency is started by a session-scoped fixture. Readiness uses bounded TCP polling instead of a startup sleep. Teardown requests normal process termination and escalates to kill only after the cleanup deadline.
+- session-scoped fixture: creates and seeds the SQLite engine;
+- function-scoped fixture: creates and closes a SQLAlchemy session;
+- session teardown: disposes the engine.
 
-Database tests use a session-scoped in-memory SQLite engine and short-lived SQLAlchemy sessions. Repository helpers own query semantics; tests own the records they assert.
+Replacing SQLite with an application database should preserve explicit transaction, cleanup, and connection ownership.
 
-These boundaries keep fast tests independent of DNS, public-service availability, fixed test order, and long-lived mutable process state.
+## Selenium boundary
 
-## Browser model
+`src/browser.py` constructs native Selenium WebDriver sessions. `conftest.py` owns their pytest lifecycle. `src/pages/` contains feature-oriented interaction models.
 
-Page objects/components own stable locators and feature-level interactions. Prefer role, label, accessible name, or stable test IDs. Playwright web-first assertions are the primary synchronization mechanism.
+### Driver factory
 
-Fixed sleeps are prohibited as functional synchronization. If explicit polling is necessary, it must be bounded and tied to an observable condition.
+The driver factory:
 
-Browser coverage is risk-based. Chromium is the primary CI gate; additional engines should be added where compatibility risk justifies the execution cost.
+- accepts only validated `chrome` or `firefox` settings;
+- configures headless operation explicitly;
+- sets deterministic browser window dimensions;
+- disables implicit waits;
+- applies page-load and script deadlines;
+- relies on Selenium Manager when a compatible driver is not already available.
 
-## Run-manifest lifecycle
+Driver binaries are runtime dependencies, not repository artifacts.
 
-`conftest.py` registers a small pytest plugin that builds `reports/run-manifest.json`.
+### Fixture lifecycle
 
-The controller process owns the run-level artifact. With pytest-xdist, workers emit normal reports and the controller aggregates them; workers never write the shared manifest. CI explicitly exercises this topology with two xdist workers and verifies that a complete JSON manifest exists without temporary-file residue.
+The `driver` fixture is function scoped. Each browser test receives an isolated browser session. The fixture also depends on the repository-local Flask service so deterministic browser targets are ready before navigation begins.
 
-The manifest records one retained outcome per node ID, including:
+Teardown always calls `quit()`, including assertion failures. Browser process ownership therefore remains attributable to the fixture that created it.
 
-- status and phase;
-- bounded duration;
-- worker identity when available;
-- deterministic artifact key;
-- run ID and non-secret runtime metadata;
-- aggregate passed/failed/skipped counts.
+### Synchronization
 
-When multiple phase reports exist, the most severe outcome is retained so teardown failures cannot be hidden behind a previously successful call phase.
+Page objects use `WebDriverWait` and Selenium expected conditions. The framework does not combine implicit waits with explicit waits and does not use fixed sleeps as readiness logic.
 
-## Diagnostic privacy
+A wait should express the observable condition required for the next operation, such as:
 
-Diagnostics use an allowlist-oriented model. Runtime keys with secret-like names are redacted. Diagnostic URLs preserve only origin/path: user-info, query strings, and fragments are removed before persistence. This prevents common token-in-URL patterns from entering retained CI artifacts.
+- element visible;
+- element clickable;
+- URL/path transition complete;
+- application-specific state present.
 
-The run manifest is written to a temporary file and atomically renamed. An interrupted write therefore cannot leave a partial file at the final artifact path.
+Timeout failure is useful evidence because it identifies the readiness contract that was not met.
 
-Browser screenshots/traces and page content may still contain application-visible test data. Use synthetic data and bounded artifact retention; automatic structured redaction is not a substitute for safe test-data design.
+## Deterministic local application
 
-## Contract and schema ownership
+`mock/server.py` provides both API and browser fixtures. The `/ui` and `/ui/details` routes are intentionally small and stable. They allow browser-framework CI to prove:
 
-Version-controlled contract artifacts live beside the tests that consume them. Schema/OpenAPI validation complements semantic assertions; it does not replace them. A response can satisfy shape and still be behaviorally incorrect.
+- driver creation;
+- navigation;
+- stable selector contracts;
+- explicit waits;
+- page-object behavior;
+- teardown;
+- cross-browser compatibility;
+- failure-evidence plumbing.
 
-## Parallelism rules
+This avoids coupling framework correctness to public websites, DNS, vendor documentation, or unrelated content changes.
 
-Parallel execution is the default assumption for fast layers. Shared state must be avoided or namespaced by run/worker identity. Tests requiring exclusive state should be isolated explicitly rather than disabling parallelism globally.
+Production adoption replaces fixture-specific tests/page objects and `TEST_UI_BASE_URL`, not the lifecycle policy.
 
-A framework helper is parallel-safe only when its lifecycle, filesystem writes, ports, and mutable data ownership remain deterministic under concurrent execution.
+## Evidence boundary
+
+Evidence is treated as data with privacy and ownership constraints.
+
+### Run manifest
+
+`src/run_manifest.py` receives native pytest reports. In xdist mode, workers never write the shared run-level file; the controller receives worker reports and owns the single manifest.
+
+This prevents file races and preserves one authoritative summary.
+
+### Browser failure diagnostics
+
+`src/browser.py` captures failure-only browser evidence. The generic collector intentionally excludes:
+
+- cookies;
+- local storage;
+- session storage;
+- page source;
+- response bodies;
+- URL credentials;
+- URL query strings;
+- URL fragments.
+
+A screenshot and small redacted metadata envelope are retained when possible. Application-specific evidence may be added only with an explicit data-handling policy.
+
+## Parallel execution
+
+Parallel execution is permitted only where shared-state ownership is clear.
+
+The framework contracts are:
+
+- xdist workers do not write the shared run manifest;
+- tests own mutable data they create;
+- browser sessions are test scoped;
+- local fixture process ownership is session scoped;
+- reports use per-run directories in CI where dimensions can execute independently.
+
+Adding parallelism before establishing these contracts would create faster nondeterminism rather than faster feedback.
+
+## Security boundaries
+
+Static repository security and active runtime security are separate domains.
+
+- Trivy examines repository/dependency/configuration risk in `security.yml`.
+- OWASP ZAP integration is optional and hard-bound to a loopback target in the committed tests.
+
+The loopback restriction prevents a configuration typo from turning routine test execution into active scanning of an unintended host. Real-environment DAST requires a separate approved-target control.
+
+## Performance boundary
+
+Locust is an explicit workload surface rather than a fixture hidden inside functional tests. Performance runs should declare target, workload shape, duration, concurrency, and success thresholds. Functional correctness and load behavior remain separate signals.
+
+## CI failure domains
+
+```mermaid
+flowchart LR
+    PR[Pull request] --> Q[Quality]
+    Q --> F[Functional matrix]
+    Q --> B[Chrome browser]
+    PR --> D[Docs contract]
+    PR --> S[Security]
+    PR --> X[Extended browsers]
+    F --> A[Artifacts]
+    B --> A
+    X --> A
+    S --> A
+    D --> A
+
+    classDef start fill:#ddf4ff,stroke:#0969da,color:#24292f;
+    classDef gate fill:#f6f8fa,stroke:#57606a,color:#24292f;
+    classDef security fill:#ffebe9,stroke:#cf222e,color:#24292f;
+    classDef evidence fill:#fff8c5,stroke:#9a6700,color:#24292f;
+    class PR start;
+    class Q,F,B,D,X gate;
+    class S security;
+    class A evidence;
+```
+
+A security finding should not look like an API assertion failure. A docs-contract failure should not look like a browser timeout. Separation makes ownership and remediation faster.
 
 ## Extension rules
 
-New infrastructure should satisfy all of the following:
+When adding framework capability:
 
-1. validate external input before side effects;
-2. expose a narrow domain/policy boundary rather than a generic wrapper;
-3. have a framework-contract test for its invariant;
-4. define ownership and cleanup explicitly;
-5. remain safe under parallel execution or document deliberate serialization;
-6. emit bounded, privacy-aware diagnostics;
-7. preserve the exit status of the underlying test failure.
+1. identify the policy that must be shared;
+2. keep application assertions outside infrastructure modules;
+3. validate external configuration before side effects;
+4. define lifecycle ownership for every created resource;
+5. define parallelism behavior before enabling concurrency;
+6. define evidence retention/redaction before collecting more data;
+7. preserve native tool errors when they already explain the failure;
+8. add framework contract tests for configuration or lifecycle behavior that could regress.
+
+A new layer should reduce ambiguity, not merely add indirection.
