@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 from flask import Flask, abort, jsonify
+from werkzeug.serving import make_server
 
 
 def load_posts() -> list[dict[str, Any]]:
@@ -79,7 +81,30 @@ def create_app() -> Flask:
     return app
 
 
+def serve_fixture() -> None:
+    """Bind the deterministic listener before publishing an ownership-ready token."""
+    host = "127.0.0.1"
+    port = 5000
+    server = make_server(host, port, create_app(), threaded=True)
+
+    ready_file_raw = os.getenv("MOCK_READY_FILE", "").strip()
+    if ready_file_raw:
+        ready_file = Path(ready_file_raw)
+        ready_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = ready_file.with_suffix(f"{ready_file.suffix}.tmp")
+        temporary.write_text(
+            json.dumps({"pid": os.getpid(), "host": host, "port": port}) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(ready_file)
+
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+
+
 app = create_app()
 
 if __name__ == "__main__":  # pragma: no cover
-    app.run(host="127.0.0.1", port=5000)
+    serve_fixture()
