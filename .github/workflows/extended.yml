@@ -36,7 +36,7 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      TEST_BASE_URL: https://jsonplaceholder.typicode.com
+      TEST_BASE_URL: http://127.0.0.1:5000
       TEST_UI_BASE_URL: http://127.0.0.1:5000/ui
       TEST_BROWSER: ${{ matrix.browser }}
       TEST_HEADLESS: "true"
