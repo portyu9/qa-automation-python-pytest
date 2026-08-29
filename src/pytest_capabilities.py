@@ -19,8 +19,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         metavar="NAME",
         help=(
             "Run tests marked with capability(NAME). Repeat the option to select "
-            "multiple capability slices. Unmarked tests are skipped only when a "
-            "selector is supplied."
+            "multiple capability slices. Unknown names fail collection instead of "
+            "silently producing an all-skipped run."
         ),
     )
 
@@ -47,14 +47,28 @@ def _item_capabilities(item: pytest.Item) -> frozenset[str]:
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: Iterable[pytest.Item]) -> None:
-    """Apply capability selection after collection so node ids and reports stay native."""
+    """Apply fail-closed capability selection after pytest has built the collection."""
     requested = _requested_capabilities(config)
     if not requested:
         return
 
+    collected = list(items)
+    available = frozenset(
+        capability
+        for item in collected
+        for capability in _item_capabilities(item)
+    )
+    unknown = requested - available
+    if unknown:
+        unknown_text = ", ".join(sorted(unknown))
+        available_text = ", ".join(sorted(available)) or "<none>"
+        raise pytest.UsageError(
+            f"unknown --capability value(s): {unknown_text}; available: {available_text}"
+        )
+
     reason = f"not selected by --capability={','.join(sorted(requested))}"
     skip = pytest.mark.skip(reason=reason)
-    for item in items:
+    for item in collected:
         if _item_capabilities(item).isdisjoint(requested):
             item.add_marker(skip)
 
