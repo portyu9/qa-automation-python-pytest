@@ -15,6 +15,7 @@ from selenium.webdriver.remote.webdriver import WebDriver
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from src import pytest_capabilities as capability_plugin
 from src.browser import capture_failure_evidence, create_driver
 from src.config import TestSettings as RuntimeSettings
 from src.db import get_engine, init_db
@@ -51,11 +52,27 @@ class _RunManifestPlugin:
         self.manifest.write(report_dir / "run-manifest.json")
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Delegate focused capability selection to the framework extension module."""
+    capability_plugin.pytest_addoption(parser)
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Register operational diagnostics without changing native pytest semantics."""
+    capability_plugin.register_capability_marker(config)
     plugin_name = "framework-run-manifest"
     if not config.pluginmanager.hasplugin(plugin_name):
         config.pluginmanager.register(_RunManifestPlugin(config), plugin_name)
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Apply optional capability slicing after pytest has built the collection."""
+    capability_plugin.pytest_collection_modifyitems(config, items)
+
+
+def pytest_report_header(config: pytest.Config) -> str | None:
+    """Surface capability slicing through pytest's standard terminal metadata."""
+    return capability_plugin.pytest_report_header(config)
 
 
 @pytest.hookimpl(hookwrapper=True)
