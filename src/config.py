@@ -50,8 +50,8 @@ def _boolean(name: str, default: bool) -> bool:
 def _base_url(name: str, default: str) -> str:
     value = os.getenv(name, default).rstrip("/")
     parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError(f"{name} must be an absolute http(s) URL, got {value!r}")
+    if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+        raise ValueError(f"{name} must be an absolute http(s) URL with a hostname, got {value!r}")
 
     try:
         _ = parsed.port
