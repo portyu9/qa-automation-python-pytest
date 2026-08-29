@@ -3,6 +3,7 @@
 [![CI](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/ci.yml/badge.svg)](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/ci.yml)
 [![Extended](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/extended.yml/badge.svg)](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/extended.yml)
 [![Security](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/security.yml/badge.svg)](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/security.yml)
+[![Docs](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/docs.yml/badge.svg)](https://github.com/portyu9/qa-automation-python-pytest/actions/workflows/docs.yml)
 
 [![Python](https://img.shields.io/badge/Python-runtime-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![pytest](https://img.shields.io/badge/pytest-testing-0A9EDC?logo=pytest&logoColor=white)](https://pytest.org/)
@@ -13,12 +14,12 @@
 [![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-CI-2088FF?logo=githubactions&logoColor=white)](https://github.com/features/actions)
 [![Trivy](https://img.shields.io/badge/Trivy-security-1904DA?logo=trivy&logoColor=white)](https://trivy.dev/)
 [![License](https://img.shields.io/badge/License-MIT-2EA44F?logo=opensourceinitiative&logoColor=white)](LICENSE)
-[![Security Policy](https://img.shields.io/badge/Security-Policy-6E7781?logo=github&logoColor=white)](.github/SECURITY.md)
+[![Security Policy](https://img.shields.io/badge/Security-Policy-24292F?logo=github&logoColor=white)](.github/SECURITY.md)
 
 A layered Python quality-engineering framework for deterministic unit, API, contract, persistence, browser, security, and performance verification. `pytest` remains the orchestration surface; framework modules own runtime validation, HTTP policy, dependency boundaries, persistence lifecycle, browser abstractions, correlation, and privacy-aware evidence without obscuring native pytest, requests, SQLAlchemy, or Playwright behavior.
 
 > [!IMPORTANT]
-> The architecture optimizes for **failure attribution before test volume**. A failed run should identify whether the first broken boundary is configuration, framework lifecycle, transport, protocol, persistence, browser behavior, security policy, or an external environment. Retries and additional abstraction are not substitutes for that classification.
+> The architecture optimizes for **failure attribution before test volume**. A failed run should identify whether the first broken boundary is configuration, framework lifecycle, transport, protocol, persistence, browser behavior, security policy, documentation contract, or an external environment. Retries and additional abstraction are not substitutes for that classification.
 
 ## Capability map
 
@@ -28,6 +29,7 @@ A layered Python quality-engineering framework for deterministic unit, API, cont
 | Browser CI | Critical Chromium behavior | Python 3.12 + native pytest-playwright | JUnit, run manifest, Playwright evidence |
 | Extended browser | Engine compatibility | Chromium + Firefox + WebKit | Per-engine JUnit, run manifest, summary |
 | Security gate | Dependency and repository-configuration risk | Trivy filesystem scan | JSON findings + Markdown summary |
+| Documentation contract | README links, workflow badges, Mermaid declarations, governance surfaces, badge palette | Python stdlib validator | Actions status |
 | Optional DAST | Dynamic behavior of the local mock API | OWASP ZAP, loopback target only | pytest assertion + ZAP alert classification |
 | Performance | Explicit performance experiments | Locust / controlled target only | Tool-native metrics |
 | Observability | Run identity and gate status | Correlated CI + structured artifacts | `ci-observability*.json`, run manifests, Actions summary |
@@ -38,6 +40,7 @@ A layered Python quality-engineering framework for deterministic unit, API, cont
 flowchart LR
     CHANGE[Change] --> FAST[Fast CI]
     CHANGE --> SEC[Security gate]
+    CHANGE --> DOCS[README contract]
     FAST --> BROWSER[Chromium gate]
     CHANGE -->|browser/framework paths| EXT[Extended browser matrix]
     EXT --> CH[Chromium]
@@ -47,6 +50,7 @@ flowchart LR
     BROWSER --> OBS
     EXT --> OBS
     SEC --> OBS
+    DOCS --> OBS
 
     classDef entry fill:#ddf4ff,stroke:#0969da,color:#24292f,stroke-width:1.5px;
     classDef core fill:#f6f8fa,stroke:#57606a,color:#24292f,stroke-width:1.5px;
@@ -55,13 +59,13 @@ flowchart LR
     classDef security fill:#ffebe9,stroke:#cf222e,color:#24292f,stroke-width:1.5px;
     class CHANGE entry;
     class FAST core;
-    class BROWSER,EXT,CH,FF,WK gate;
+    class BROWSER,EXT,CH,FF,WK,DOCS gate;
     class SEC security;
     class OBS evidence;
     linkStyle default stroke:#57606a,stroke-width:1.4px;
 ```
 
-The standard PR lane stays fast. Cross-browser multiplication is isolated in `extended.yml`, triggered by browser/framework changes, `main`, schedule, or manual dispatch. Security scanning is a separate failure domain so dependency/configuration risk is not confused with behavioral test failures.
+The standard PR lane stays fast. Cross-browser multiplication is isolated in `extended.yml`, triggered by browser/framework changes, `main`, schedule, or manual dispatch. Security scanning and documentation validation remain separate failure domains so dependency/configuration risk or README drift is not confused with behavioral test failures.
 
 ## Engineering invariants
 
@@ -71,11 +75,28 @@ The standard PR lane stays fast. Cross-browser multiplication is isolated in `ex
 | Base URLs | Absolute HTTP(S), valid port, no URL credentials, query string, or fragment. |
 | HTTP policy | Connection/read budgets, pooling, correlation, and retries for safe/idempotent methods only. |
 | Isolation | Tests own mutable state; local Flask and in-memory SQLite provide deterministic fast boundaries. |
+| Persistence lifecycle | The owner that creates a SQLAlchemy engine also disposes it; sessions and pooled DBAPI connections are not left to garbage collection. |
 | Browser synchronization | Playwright actionability + web-first assertions; elapsed time is not a readiness condition. |
 | Parallelism | Fast tests are concurrency-safe; xdist workers never race the controller-owned run manifest. |
 | Evidence | Machine-readable reports are bounded, atomic where shared, and scrub URL user-info/query/fragment. |
 | Security | Automated dependency/configuration scanning plus a loopback-only optional active DAST hook. |
+| Documentation | README-local references, workflow badges, Mermaid roots, governance files, and static badge-color uniqueness are executable contracts. |
 | CI integrity | Test exit codes remain authoritative; reporting steps run `always()` without converting failures to success. |
+
+## Tool ownership model
+
+The framework is intentionally opinionated about **policy ownership**, but it does not replace the native semantics of the tools it composes.
+
+| Tool / technology | Native responsibility | Framework responsibility | Deliberately left visible |
+| --- | --- | --- | --- |
+| `pytest` | Collection, markers, fixture scheduling, parametrization, assertion/phase reporting | Fixture lifecycle, layer markers, configuration contracts, controller-owned run manifest | Node IDs, setup/call/teardown outcomes, native failure output |
+| `requests` | HTTP transport, connection exceptions, response objects | Validated base target, pooled session, connect/read budgets, safe-method retry policy, run correlation | HTTP status semantics and transport exceptions |
+| SQLAlchemy / SQLite | ORM mapping, sessions, transactions, pooling, DBAPI lifecycle | Repository ownership, deterministic seeding, explicit session/engine disposal | Transaction and connection lifecycle rather than a generic persistence wrapper |
+| Playwright | Browser process/context/page behavior, locator actionability, web-first assertions | Feature-oriented page abstractions, browser identity, evidence correlation, engine matrix | Native locator/assertion semantics and browser-specific failures |
+| Locust | User scheduling, workload execution, performance metrics | Controlled-target policy and explicit experiment ownership | Tool-native latency/throughput/error metrics; performance is not functional correctness |
+| OWASP ZAP | Active scanning and alert classification | Hard-bound loopback target, bounded daemon polling, finding threshold | Scanner findings; the framework does not redirect or reinterpret arbitrary targets |
+| Trivy | Filesystem vulnerability and supported misconfiguration analysis | HIGH/CRITICAL fixed-finding gate and retained JSON/Markdown evidence | Trivy is not presented as generic credential/secret scanning |
+| GitHub Actions | Job scheduling, matrices, isolation, artifact transport | Separation of functional, extended, security, docs, and observability failure domains | Native process exit codes and per-job status |
 
 ## Architecture
 
@@ -137,15 +158,32 @@ The dependency direction is deliberate: tests state intent; framework code contr
 │   ├── framework/
 │   ├── performance/
 │   └── security/
-├── .github/workflows/
-│   ├── ci.yml
-│   ├── extended.yml
-│   └── security.yml
+├── .github/
+│   ├── scripts/
+│   │   └── validate_readme.py
+│   └── workflows/
+│       ├── ci.yml
+│       ├── docs.yml
+│       ├── extended.yml
+│       └── security.yml
 ├── conftest.py
 ├── pytest.ini
 ├── pyproject.toml
 └── requirements.txt
 ```
+
+## Documentation contract
+
+`.github/workflows/docs.yml` executes a standard-library validator on every pull request and on `main`. It checks only deterministic repository-local facts:
+
+- local Markdown targets resolve inside the repository;
+- every displayed workflow badge maps to a committed workflow file;
+- Mermaid blocks start with a recognized diagram declaration;
+- root `LICENSE` and `.github/SECURITY.md` remain present;
+- every static Shields badge uses a unique color within this README;
+- the Security Policy badge remains GitHub-dark `#24292F`.
+
+The gate intentionally does **not** crawl arbitrary external URLs. External availability is not deterministic repository correctness and should not turn documentation validation into a network-uptime test.
 
 ## Quick start
 
@@ -183,6 +221,9 @@ TEST_BROWSER=firefox pytest tests/e2e --browser=firefox
 # Static/source quality
 ruff check .
 python -m compileall -q src tests
+
+# Documentation contract
+python .github/scripts/validate_readme.py
 
 # Parallel framework-lifecycle contract
 TEST_REPORT_DIR=reports/xdist-contract \
@@ -259,7 +300,7 @@ Browser tests should not reproduce large business-data matrices that are already
 
 Fast API tests start the local Flask service through `run_mock_api`. Readiness is TCP-polled against a monotonic deadline rather than guessed with a startup sleep. Teardown attempts graceful termination and escalates only after a bounded cleanup budget.
 
-Database tests use a session-scoped in-memory SQLite engine and short-lived SQLAlchemy sessions. Tests create the state they assert; ordering is never a dependency contract.
+Database tests use a session-scoped in-memory SQLite engine and short-lived SQLAlchemy sessions. Repository instances created through `UserRepository.initialize()` separately own both their session and engine and dispose both deterministically; pooled DBAPI connections are never intentionally left to garbage collection.
 
 ## Browser model
 
@@ -295,6 +336,8 @@ The gate scans:
 - HIGH/CRITICAL supported configuration findings.
 
 `ignore-unfixed: true` keeps the blocking policy focused on findings for which remediation is available. The job preserves `reports/security/trivy.json` and a compact `summary.md` for triage.
+
+Trivy's configured scanners here are `vuln,misconfig`; this repository does not claim that workflow as generic credential/secret scanning.
 
 ### Optional dynamic scan
 
@@ -371,6 +414,7 @@ flowchart TD
     Q --> C[Chromium browser gate]
 
     PR --> S[Trivy security gate]
+    PR --> D[README contract]
     BCHANGE[Browser/framework change] --> X[Extended browser matrix]
     X --> X1[Chromium]
     X --> X2[Firefox]
@@ -381,6 +425,7 @@ flowchart TD
     P313 --> E
     C --> E
     S --> E
+    D --> E
     X1 --> E
     X2 --> E
     X3 --> E
@@ -392,7 +437,7 @@ flowchart TD
     classDef security fill:#ffebe9,stroke:#cf222e,color:#24292f,stroke-width:1.5px;
     class PR,BCHANGE entry;
     class Q core;
-    class P311,P312,P313,C,X,X1,X2,X3 gate;
+    class P311,P312,P313,C,D,X,X1,X2,X3 gate;
     class S security;
     class E evidence;
     linkStyle default stroke:#57606a,stroke-width:1.4px;
@@ -404,10 +449,11 @@ flowchart TD
 | --- | --- | --- |
 | Configuration exception | Input contract | Correct the invalid value; do not rerun it away |
 | Ruff / compile failure | Source quality | Fix source/static defect |
+| README contract | Documentation/governance drift | Fix the broken local reference, workflow badge, Mermaid declaration, governance surface, or palette collision |
 | xdist manifest contract | Framework lifecycle | Inspect controller/worker ownership |
 | API assertion | Protocol/semantic behavior | Use node ID + local dependency evidence |
 | Mock readiness | Process lifecycle | Inspect listener startup/port ownership |
-| Database assertion | Persistence semantics | Inspect test-owned state/transaction boundary |
+| Database assertion | Persistence semantics | Inspect test-owned state/transaction/resource boundary |
 | Chromium-only failure | Browser/application | Inspect Playwright evidence |
 | One extended engine fails | Engine compatibility | Compare browser-specific behavior before weakening assertions |
 | Trivy gate | Dependency/configuration risk | Triage exact JSON finding and remediation |
@@ -420,14 +466,16 @@ When extending the framework:
 
 1. validate new external inputs before side effects;
 2. keep HTTP transport policy in the HTTP layer;
-3. keep repository methods domain-oriented rather than building a generic SQL façade;
-4. keep page objects feature-oriented and preserve native Playwright primitives;
-5. add reusable fixtures only when lifecycle ownership truly spans tests/modules;
-6. add framework-contract tests for infrastructure invariants;
-7. keep shared artifacts single-writer or explicitly namespaced;
-8. emit bounded, privacy-aware diagnostics;
-9. add browser multiplication only for browser risk;
-10. keep active security/performance behavior constrained to controlled targets.
+3. make the creator of database engines/sessions responsible for deterministic disposal;
+4. keep repository methods domain-oriented rather than building a generic SQL façade;
+5. keep page objects feature-oriented and preserve native Playwright primitives;
+6. add reusable fixtures only when lifecycle ownership truly spans tests/modules;
+7. add framework-contract tests for infrastructure invariants;
+8. keep shared artifacts single-writer or explicitly namespaced;
+9. emit bounded, privacy-aware diagnostics;
+10. add browser multiplication only for browser risk;
+11. keep active security/performance behavior constrained to controlled targets;
+12. update README contracts when a public command, workflow, tool responsibility, or evidence surface changes.
 
 ## Explicit anti-patterns
 
@@ -439,10 +487,12 @@ The framework rejects:
 - blanket assertion retries;
 - credentials or query secrets in base URLs;
 - generic wrappers that make pytest/requests/Playwright harder to debug;
+- SQLAlchemy engines whose lifecycle is left to garbage collection;
 - xdist workers writing one shared artifact;
 - unbounded diagnostic payloads;
 - active security or sustained performance activity against arbitrary targets;
-- CI reporting that suppresses the real test process exit code.
+- CI reporting that suppresses the real test process exit code;
+- README claims or badge surfaces that are not backed by committed repository state.
 
 ## Design references
 
