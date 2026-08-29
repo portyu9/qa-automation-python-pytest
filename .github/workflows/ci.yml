@@ -17,6 +17,7 @@ env:
   PYTHONUNBUFFERED: "1"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   TEST_BASE_URL: https://jsonplaceholder.typicode.com
+  TEST_UI_BASE_URL: http://127.0.0.1:5000/ui
   TEST_RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
@@ -118,6 +119,7 @@ jobs:
   browser:
     needs: quality
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -126,18 +128,18 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: pip install -r requirements.txt
-      - run: python -m playwright install --with-deps chromium
-      - name: Run browser tests
+      - name: Run deterministic Chrome/Selenium gate
         env:
-          TEST_BROWSER: chromium
+          TEST_BROWSER: chrome
           TEST_HEADLESS: "true"
-        run: pytest tests/e2e --browser=chromium --junitxml=reports/e2e.xml
+          TEST_REPORT_DIR: reports/browser
+        run: pytest tests/e2e --junitxml=reports/browser/junit.xml
       - name: Publish browser observability summary
         if: always()
         env:
           JOB_STATUS: ${{ job.status }}
         run: |
-          mkdir -p reports
+          mkdir -p reports/browser
           python - <<'PY'
           import json
           import os
@@ -145,32 +147,29 @@ jobs:
 
           payload = {
               "schemaVersion": 1,
-              "framework": "pytest-playwright",
+              "framework": "pytest-selenium",
               "runId": os.environ["TEST_RUN_ID"],
-              "dimension": {"python": "3.12", "browser": "chromium"},
+              "dimension": {"python": "3.12", "browser": "chrome"},
               "status": os.environ["JOB_STATUS"],
               "sha": os.environ["GITHUB_SHA"],
               "ref": os.environ["GITHUB_REF"],
           }
-          Path("reports/ci-observability-browser.json").write_text(
+          Path("reports/browser/ci-observability-browser.json").write_text(
               json.dumps(payload, indent=2) + "\n", encoding="utf-8"
           )
           PY
           {
-            echo '### pytest / Playwright · Chromium'
+            echo '### pytest / Selenium · Chrome'
             echo
             echo "- Run ID: \`${TEST_RUN_ID}\`"
             echo "- Job status: \`${JOB_STATUS}\`"
-            echo '- Evidence: JUnit + run manifest + Playwright artifacts + CI observability envelope'
+            echo '- Evidence: JUnit + run manifest + redacted browser failure diagnostics'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload browser evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: browser-evidence
-          path: |
-            reports/
-            test-results/
-            playwright-report/
+          path: reports/browser/
           if-no-files-found: ignore
           retention-days: 14
