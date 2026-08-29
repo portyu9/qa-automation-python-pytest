@@ -1,15 +1,18 @@
-from sqlalchemy import create_engine, Column, Integer, String
-from sqlalchemy.orm import declarative_base, sessionmaker, Session
-from sqlalchemy.engine import Engine
+"""SQLAlchemy persistence model and deterministic in-memory test database setup."""
 
-# Base class for ORM models
+from __future__ import annotations
+
+from sqlalchemy import Column, Integer, String, create_engine
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
+
+
 Base = declarative_base()
 
+
 class User(Base):
-    """
-    ORM model representing a user record in the database. I define this here so that my tests can insert
-    and query users with SQLAlchemy while keeping the schema explicit.
-    """
+    """Persistence model used by repository and transaction-focused tests."""
+
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
     name = Column(String)
@@ -17,36 +20,26 @@ class User(Base):
 
 
 def get_engine(echo: bool = False) -> Engine:
-    """
-    Create a new in‑memory SQLite engine.
-
-    The echo flag prints SQL statements for debugging when set to True.
-    """
+    """Create an isolated in-memory SQLite engine for a single test session."""
     return create_engine("sqlite:///:memory:", echo=echo, future=True)
 
 
-def init_db(engine) -> None:
-    """
-    Create all tables defined on the Base metadata and seed initial users.
-
-    This function is idempotent and can be called multiple times.
-    """
-    # Create tables
+def init_db(engine: Engine) -> None:
+    """Create the schema and seed deterministic baseline records."""
     Base.metadata.create_all(engine)
 
-    # Open a session and insert sample users
-    SessionLocal = sessionmaker(bind=engine, future=True)
-    with SessionLocal() as session:
-        session.add_all([
-            User(name="Alice", email="alice@example.com"),
-            User(name="Bob", email="bob@example.com"),
-            User(name="Charlie", email="charlie@example.com"),
-        ])
+    session_factory = sessionmaker(bind=engine, future=True)
+    with session_factory() as session:
+        session.add_all(
+            [
+                User(name="Alice", email="alice@example.com"),
+                User(name="Bob", email="bob@example.com"),
+                User(name="Charlie", email="charlie@example.com"),
+            ]
+        )
         session.commit()
 
 
-def get_all_users(session: Session):
-    """
-    Retrieve all users from the database ordered by their id.
-    """
+def get_all_users(session: Session) -> list[User]:
+    """Return users in deterministic primary-key order."""
     return session.query(User).order_by(User.id).all()
