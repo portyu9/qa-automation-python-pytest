@@ -1,22 +1,24 @@
-"""
-End‑to‑end test for example.com.
-
-This test uses the ``page`` fixture provided by the ``pytest‑playwright``
-plugin.  It navigates to example.com and asserts that the page title and
-heading match expectations.  The test is marked as ``e2e``.
-"""
+"""Deterministic browser workflow test for the repository-local UI fixture."""
 
 import pytest
+from selenium.webdriver.remote.webdriver import WebDriver
 
-pytest.importorskip("playwright.sync_api")
+from src.config import TestSettings
+from src.pages.home_page import HomePage
 
 
 @pytest.mark.e2e
-def test_example_page(page) -> None:
-    # Navigate to the example site
-    page.goto("https://example.com")
-    # Assert that the title is correct
-    assert page.title() == "Example Domain"
-    # Assert that the heading contains the expected text
-    heading = page.locator("h1").inner_text()
-    assert heading.strip() == "Example Domain"
+@pytest.mark.smoke
+def test_local_fixture_navigation(driver: WebDriver) -> None:
+    settings = TestSettings.from_env()
+    home = HomePage(
+        driver,
+        base_url=settings.ui_base_url,
+        timeout_seconds=settings.browser_timeout_seconds,
+    ).open()
+
+    assert home.page_title_text() == "Quality Engineering Fixture"
+
+    home.open_details()
+
+    assert home.details_title_text() == "Fixture Details"
