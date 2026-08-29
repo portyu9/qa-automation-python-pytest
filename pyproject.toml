@@ -4,10 +4,9 @@ line-length = 100
 extend-exclude = [".venv", "reports", "artifacts"]
 
 [tool.ruff.lint]
-# Start with correctness-focused rules across the entire existing codebase.
-# Import/modernization/typography rules can be added once the legacy baseline
-# is reformatted in a dedicated mechanical change rather than hiding real CI
-# failures inside the framework upgrade.
+# Keep automated linting focused on correctness, bug patterns, and simple
+# semantic improvements. Broader formatting/style policy should be introduced
+# deliberately so mechanical churn remains separate from behavioral changes.
 select = ["E", "F", "B", "SIM"]
 ignore = ["E501"]
 
