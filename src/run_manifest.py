@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -13,6 +14,13 @@ from urllib.parse import urlsplit, urlunsplit
 _STATUS_RANK = {"passed": 0, "skipped": 1, "failed": 2}
 _SENSITIVE_KEY = re.compile(r"(?:token|secret|password|passwd|authorization|api[_-]?key)", re.I)
 _SLUG = re.compile(r"[^A-Za-z0-9._-]+")
+_TEXT_URL = re.compile(r"https?://[^\s\"'<>]+", re.I)
+_AUTH = re.compile(r"\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", re.I)
+_SECRET_ASSIGNMENT = re.compile(
+    r"\b(access[_-]?token|token|password|passwd|secret|api[_-]?key|authorization)\b"
+    r"(\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;&}\]]+)",
+    re.I,
+)
 
 
 def safe_slug(value: str, *, max_length: int = 120) -> str:
@@ -23,16 +31,33 @@ def safe_slug(value: str, *, max_length: int = 120) -> str:
 
 def redact_url(value: str) -> str:
     """Keep URL origin/path while dropping user-info, query data, and fragments."""
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return "<invalid-url>"
     if not parsed.hostname:
         return value
 
     hostname = parsed.hostname
     host = f"[{hostname}]" if ":" in hostname else hostname
-    if parsed.port is not None:
-        host = f"{host}:{parsed.port}"
+    try:
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+    except ValueError:
+        return "<invalid-url>"
 
     return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+
+
+def redact_text(value: str, *, max_length: int = 500) -> str:
+    """Redact common credential forms and bound retained diagnostic labels."""
+    if max_length < 1:
+        raise ValueError("max_length must be positive")
+    text = str(value)
+    text = _TEXT_URL.sub(lambda match: redact_url(match.group(0)), text)
+    text = _AUTH.sub(r"\1 <redacted>", text)
+    text = _SECRET_ASSIGNMENT.sub(r"\1\2<redacted>", text)
+    return text if len(text) <= max_length else f"{text[:max_length]}…<truncated>"
 
 
 def redact_mapping(values: dict[str, Any]) -> dict[str, Any]:
@@ -87,14 +112,17 @@ class RunManifest:
     ) -> None:
         if status not in _STATUS_RANK:
             raise ValueError(f"unsupported test status: {status!r}")
+        if not math.isfinite(duration_seconds):
+            raise ValueError("duration_seconds must be finite")
 
+        safe_nodeid = redact_text(nodeid)
         candidate = TestOutcome(
-            nodeid=nodeid,
-            artifact_key=safe_slug(nodeid),
+            nodeid=safe_nodeid,
+            artifact_key=safe_slug(safe_nodeid),
             status=status,
-            phase=phase,
+            phase=redact_text(phase, max_length=50),
             duration_seconds=round(max(duration_seconds, 0.0), 6),
-            worker=worker,
+            worker=redact_text(worker, max_length=100),
         )
         current = self._outcomes.get(nodeid)
         if current is None or _STATUS_RANK[candidate.status] >= _STATUS_RANK[current.status]:
@@ -123,7 +151,7 @@ class RunManifest:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(f"{path.suffix}.tmp")
         temporary.write_text(
-            json.dumps(self.as_dict(), indent=2, sort_keys=True) + "\n",
+            json.dumps(self.as_dict(), indent=2, sort_keys=True, allow_nan=False) + "\n",
             encoding="utf-8",
         )
         temporary.replace(path)
