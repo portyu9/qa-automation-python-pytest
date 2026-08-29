@@ -4,6 +4,17 @@ from src.config import TestSettings as RuntimeSettings
 
 
 @pytest.mark.unit
+def test_committed_defaults_target_repository_local_fixture(monkeypatch):
+    monkeypatch.delenv("TEST_BASE_URL", raising=False)
+    monkeypatch.delenv("TEST_UI_BASE_URL", raising=False)
+
+    settings = RuntimeSettings.from_env()
+
+    assert settings.base_url == "http://127.0.0.1:5000"
+    assert settings.ui_base_url == "http://127.0.0.1:5000/ui"
+
+
+@pytest.mark.unit
 def test_settings_normalize_urls_and_boolean(monkeypatch):
     monkeypatch.setenv("TEST_BASE_URL", "https://api.example.test/v1/")
     monkeypatch.setenv("TEST_UI_BASE_URL", "https://ui.example.test/app/")
