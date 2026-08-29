@@ -3,14 +3,14 @@
 import pytest
 from selenium.webdriver.remote.webdriver import WebDriver
 
-from src.config import TestSettings
+from src.config import TestSettings as RuntimeSettings
 from src.pages.home_page import HomePage
 
 
 @pytest.mark.e2e
 @pytest.mark.smoke
 def test_local_fixture_navigation(driver: WebDriver) -> None:
-    settings = TestSettings.from_env()
+    settings = RuntimeSettings.from_env()
     home = HomePage(
         driver,
         base_url=settings.ui_base_url,
