@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from types import SimpleNamespace
 
 import pytest
+
+from src import pytest_capabilities
 
 
 @pytest.mark.capability("parametrization")
@@ -70,3 +73,25 @@ async def test_asyncio_integration_uses_native_async_test_execution() -> None:
         return {"status": "ready"}
 
     assert await resolve() == {"status": "ready"}
+
+
+@pytest.mark.unit
+def test_unknown_capability_selector_fails_collection_instead_of_skipping_everything() -> None:
+    class FakeConfig:
+        @staticmethod
+        def getoption(name: str):
+            assert name == "capability"
+            return ["typo-capability"]
+
+    class FakeItem:
+        @staticmethod
+        def iter_markers(name: str):
+            assert name == "capability"
+            return [SimpleNamespace(args=("fixtures",))]
+
+        @staticmethod
+        def add_marker(marker) -> None:
+            raise AssertionError(f"selection must fail before applying skip markers: {marker}")
+
+    with pytest.raises(pytest.UsageError, match="unknown --capability.*typo-capability.*fixtures"):
+        pytest_capabilities.pytest_collection_modifyitems(FakeConfig(), [FakeItem()])
