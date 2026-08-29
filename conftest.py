@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import os
-import socket
 import subprocess
 import sys
 import time
 from collections.abc import Generator
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 from selenium.webdriver.remote.webdriver import WebDriver
@@ -84,20 +85,52 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[object]):
     setattr(item, f"rep_{report.when}", report)
 
 
-def _wait_for_port(host: str, port: int, timeout_seconds: float = 5.0) -> None:
-    """Wait for a TCP listener with a bounded deadline instead of a fixed sleep."""
+def _fixture_log_tail(log_path: Path, max_chars: int = 2_000) -> str:
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "<fixture log unavailable>"
+    return text[-max_chars:] or "<fixture log empty>"
+
+
+def _wait_for_fixture_owner(
+    proc: subprocess.Popen[bytes],
+    ready_file: Path,
+    log_path: Path,
+    timeout_seconds: float = 5.0,
+) -> None:
+    """Require the spawned process to prove it owns the expected listener."""
     deadline = time.monotonic() + timeout_seconds
-    last_error: OSError | None = None
 
     while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=0.25):
-                return
-        except OSError as error:
-            last_error = error
-            time.sleep(0.1)
+        return_code = proc.poll()
+        if return_code is not None:
+            raise RuntimeError(
+                "mock API exited before claiming its listener "
+                f"(exit={return_code}): {_fixture_log_tail(log_path)}"
+            )
 
-    raise RuntimeError(f"mock API did not become ready on {host}:{port}") from last_error
+        if ready_file.exists():
+            try:
+                payload = json.loads(ready_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                # The child publishes by atomic rename, but tolerate a transient
+                # filesystem visibility race within the bounded startup window.
+                pass
+            else:
+                expected = {"pid": proc.pid, "host": "127.0.0.1", "port": 5000}
+                if payload != expected:
+                    raise RuntimeError(
+                        f"mock API ownership token mismatch: expected {expected!r}, got {payload!r}"
+                    )
+                return
+
+        time.sleep(0.05)
+
+    raise RuntimeError(
+        "mock API did not claim 127.0.0.1:5000 before the startup deadline: "
+        f"{_fixture_log_tail(log_path)}"
+    )
 
 
 @pytest.fixture(scope="session")
@@ -123,21 +156,35 @@ def db_session(db_engine: Engine) -> Generator[Session, None, None]:
 
 @pytest.fixture(scope="session")
 def run_mock_api() -> Generator[None, None, None]:
-    """Run the repository-local Flask fixture for the test session."""
+    """Run the repository-local Flask fixture and verify listener ownership."""
     script_path = Path(__file__).parent / "mock" / "server.py"
     env = os.environ.copy()
-    proc = subprocess.Popen([sys.executable, str(script_path)], env=env)
 
-    try:
-        _wait_for_port("127.0.0.1", 5000)
-        yield
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
+    with TemporaryDirectory(prefix="pytest-local-fixture-") as temp_dir:
+        temp_path = Path(temp_dir)
+        ready_file = temp_path / "ready.json"
+        log_path = temp_path / "server.log"
+        env["MOCK_READY_FILE"] = str(ready_file)
+
+        with log_path.open("w", encoding="utf-8") as log_handle:
+            proc = subprocess.Popen(
+                [sys.executable, str(script_path)],
+                env=env,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+            )
+
+            try:
+                _wait_for_fixture_owner(proc, ready_file, log_path)
+                yield
+            finally:
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait(timeout=5)
 
 
 @pytest.fixture
