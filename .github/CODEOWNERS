@@ -1,0 +1,5 @@
+# Default ownership for framework code, tests, CI, security, and documentation.
+* @portyu9
+
+# Governance and automation changes require explicit owner review.
+.github/ @portyu9
