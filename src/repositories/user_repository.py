@@ -1,57 +1,48 @@
-"""
-UserRepository encapsulates database operations for the User model.
-I use SQLAlchemy sessions to abstract queries, returning user objects without exposing
-SQL details to my tests. This class provides convenient methods to initialize
-an in-memory or file-based database, fetch all users, and fetch a single user by id.
-"""
+"""Repository boundary for deterministic User persistence operations."""
 
-from sqlalchemy.orm import Session
+from __future__ import annotations
+
 from sqlalchemy import create_engine
-from ..db import init_db, User
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
+
+from ..db import User, init_db
+
 
 class UserRepository:
-    """Repository layer for User database operations."""
+    """Own a SQLAlchemy session and the engine that backs that session."""
 
-    def __init__(self, session: Session) -> None:
-        self.session = session
+    def __init__(self, session: Session, engine: Engine) -> None:
+        self._session = session
+        self._engine = engine
 
     @classmethod
     def initialize(cls, db_url: str = "sqlite:///qa_users.db") -> "UserRepository":
-        """Initialize the repository by creating an engine, seeding data, and returning a session-wrapped repository.
-
-        Args:
-            db_url: Database URL string for SQLite. Defaults to file-based qa_users.db.
-
-        Returns:
-            A configured UserRepository instance with an active SQLAlchemy session.
-        """
+        """Create, seed, and own the database resources required by the repository."""
         engine = create_engine(db_url, echo=False, future=True)
-        init_db(engine)
-        session = Session(bind=engine)
-        return cls(session)
+        try:
+            init_db(engine)
+            session = Session(bind=engine)
+        except Exception:
+            engine.dispose()
+            raise
+        return cls(session, engine)
 
     def find_all(self) -> list[User]:
-        """Retrieve all users ordered by their primary key.
-
-        Returns:
-            list[User]: All user records from the database.
-        """
-        return self.session.query(User).order_by(User.id).all()
+        """Retrieve all users ordered by primary key."""
+        return self._session.query(User).order_by(User.id).all()
 
     def find_by_id(self, user_id: int) -> User | None:
-        """Retrieve a single user by id.
-
-        Args:
-            user_id: The primary key of the user.
-
-        Returns:
-            User | None: The user record if found, otherwise None.
-        """
-        return self.session.query(User).filter(User.id == user_id).one_or_none()
+        """Retrieve one user by primary key, or ``None`` when it does not exist."""
+        return self._session.query(User).filter(User.id == user_id).one_or_none()
 
     def close(self) -> None:
-        """Close the underlying session.
+        """Release both ORM and pooled DBAPI resources deterministically."""
+        self._session.close()
+        self._engine.dispose()
 
-        It's good practice to explicitly close sessions when the repository is no longer needed.
-        """
-        self.session.close()
+    def __enter__(self) -> "UserRepository":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
