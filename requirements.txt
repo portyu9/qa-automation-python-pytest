@@ -12,4 +12,4 @@ locust>=2.46.4,<3
 python-owasp-zap-v2.4>=0.1.0
 cryptography>=50.0.1,<51
 pyOpenSSL>=26.4.0,<27
-ruff>=0.12,<1
+ruff>=0.16.4,<1
