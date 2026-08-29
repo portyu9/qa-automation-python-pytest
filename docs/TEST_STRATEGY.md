@@ -31,10 +31,25 @@ It verifies:
 - persistence behavior;
 - configuration invariants;
 - run-manifest ownership;
+- pytest capability-selection contracts;
 - supported Python versions;
 - branch coverage.
 
 Coverage percentage is a diagnostic guardrail rather than a substitute for risk analysis. New tests should prove meaningful behavior or framework policy, not simply exercise lines.
+
+## Focused pytest execution
+
+`--capability NAME` is a repeatable operator selector for narrowing an already collected suite. It is not a second test-selection language and it does not alter required CI coverage.
+
+Focused execution must fail closed:
+
+- capability markers remain native pytest markers and are registered for strict-marker mode;
+- nonselected tests are skipped only after native collection;
+- an unknown capability name is a usage error, not an all-skipped successful run;
+- the terminal header exposes the active selection;
+- CI remains responsible for the complete required suite rather than relying on ad hoc focused slices.
+
+The false-green case to prevent is a misspelled selector that executes no intended test while returning success.
 
 ## Browser strategy
 
@@ -165,6 +180,8 @@ Prefer:
 - unique run/test identifiers where shared environments require them;
 - cleanup that is safe to repeat.
 
+Supplied run IDs are bounded correlation tokens, not free-form labels. Unsafe whitespace/control characters and overlong values are rejected before they can become headers, artifact paths, or evidence keys.
+
 Avoid production data, hidden dependencies on pre-existing records, and fixed globally shared mutable identifiers.
 
 ## API and contract testing
@@ -185,7 +202,7 @@ Security signals are separated by purpose.
 
 ### Static/repository security
 
-Trivy scans repository and dependency/configuration surfaces in a dedicated workflow. Findings remain independently attributable from functional failures.
+Trivy scans vulnerability, misconfiguration, and committed-secret surfaces in a dedicated workflow. Findings remain independently attributable from functional failures.
 
 ### Dynamic security
 
