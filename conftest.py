@@ -11,6 +11,7 @@ from collections.abc import Generator
 from pathlib import Path
 
 import pytest
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from src.config import TestSettings as RuntimeSettings
@@ -72,15 +73,18 @@ def _wait_for_port(host: str, port: int, timeout_seconds: float = 5.0) -> None:
 
 
 @pytest.fixture(scope="session")
-def db_engine() -> object:
-    """Create and seed an in-memory SQLite engine for database tests."""
+def db_engine() -> Generator[Engine, None, None]:
+    """Create, seed, and deterministically dispose an in-memory SQLite engine."""
     engine = get_engine()
     init_db(engine)
-    return engine
+    try:
+        yield engine
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture
-def db_session(db_engine: object) -> Generator[Session, None, None]:
+def db_session(db_engine: Engine) -> Generator[Session, None, None]:
     """Yield a SQLAlchemy session and close it deterministically after the test."""
     session = Session(bind=db_engine)
     try:
