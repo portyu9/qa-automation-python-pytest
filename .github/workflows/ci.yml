@@ -23,6 +23,7 @@ env:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -52,6 +53,7 @@ jobs:
 
   functional:
     needs: quality
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
