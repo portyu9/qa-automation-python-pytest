@@ -30,8 +30,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements.txt
+          cache-dependency-path: requirements-lock/python-3.12.txt
+      - name: Install hash-locked Python 3.12 dependency graph
+        run: python -m pip install --require-hashes -r requirements-lock/python-3.12.txt
       - run: ruff check .
       - run: python -m compileall -q src tests
       - name: Validate xdist run-manifest ownership
@@ -65,8 +66,9 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements.txt
+          cache-dependency-path: requirements-lock/python-${{ matrix.python }}.txt
+      - name: Install hash-locked dependency graph for Python ${{ matrix.python }}
+        run: python -m pip install --require-hashes -r "requirements-lock/python-${{ matrix.python }}.txt"
       - name: Run fast test gate
         run: >-
           pytest
@@ -107,6 +109,7 @@ jobs:
             echo
             echo "- Run ID: \`${TEST_RUN_ID}\`"
             echo "- Job status: \`${JOB_STATUS}\`"
+            echo '- Dependencies: interpreter-specific hash-locked graph (`--require-hashes`)'
             echo '- Evidence: JUnit + coverage XML + run manifest + CI observability envelope'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload functional evidence
@@ -128,8 +131,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements.txt
+          cache-dependency-path: requirements-lock/python-3.12.txt
+      - name: Install hash-locked Python 3.12 dependency graph
+        run: python -m pip install --require-hashes -r requirements-lock/python-3.12.txt
       - name: Run deterministic Chrome/Selenium gate
         env:
           TEST_BROWSER: chrome
@@ -165,6 +169,7 @@ jobs:
             echo
             echo "- Run ID: \`${TEST_RUN_ID}\`"
             echo "- Job status: \`${JOB_STATUS}\`"
+            echo '- Dependencies: Python 3.12 hash-locked graph (`--require-hashes`)'
             echo '- Evidence: JUnit + run manifest + redacted browser failure diagnostics'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload browser evidence
