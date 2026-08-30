@@ -6,6 +6,7 @@ import json
 import re
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
+from uuid import uuid4
 
 from selenium import webdriver
 from selenium.common.exceptions import WebDriverException
@@ -66,7 +67,10 @@ def capture_failure_evidence(
     evidence_dir = report_dir / "browser"
     evidence_dir.mkdir(parents=True, exist_ok=True)
     safe_nodeid = redact_text(nodeid)
-    stem = _SAFE_NAME.sub("-", safe_nodeid).strip("-")[:120] or "browser-test"
+    label = _SAFE_NAME.sub("-", safe_nodeid).strip("-")[:80] or "browser-test"
+    # A random, non-secret-derived suffix prevents redaction/truncation from
+    # collapsing distinct failures onto the same artifact path.
+    stem = f"{label}-{uuid4().hex}"
 
     screenshot_name = f"{stem}.png"
     screenshot_path = evidence_dir / screenshot_name
