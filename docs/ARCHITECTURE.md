@@ -120,7 +120,9 @@ Driver binaries are runtime dependencies, not repository artifacts.
 
 The `driver` fixture is function scoped. Each browser test receives an isolated browser session. The fixture also depends on the repository-local Flask service so deterministic browser targets are ready before navigation begins.
 
-Teardown always calls `quit()`, including assertion failures. Browser process ownership therefore remains attributable to the fixture that created it.
+The local service is not considered ready merely because port 5000 accepts connections. `run_mock_api` launches the child with a private temporary ownership file; the child atomically publishes its own PID, host, and port only after successfully binding the listener. The parent verifies that exact token and continuously rejects early child exit during the bounded startup window. An unrelated process already listening on the same port therefore cannot satisfy readiness accidentally.
+
+Teardown always calls `quit()` for browser sessions and terminates/waits for the owned fixture process, including assertion failures. Resource ownership therefore remains attributable to the fixture that created it.
 
 ### Synchronization
 
@@ -139,6 +141,7 @@ Timeout failure is useful evidence because it identifies the readiness contract 
 
 `mock/server.py` provides both API and browser fixtures. The `/ui` and `/ui/details` routes are intentionally small and stable. They allow browser-framework CI to prove:
 
+- fixture listener ownership rather than simple port reachability;
 - driver creation;
 - navigation;
 - stable selector contracts;
@@ -148,7 +151,7 @@ Timeout failure is useful evidence because it identifies the readiness contract 
 - cross-browser compatibility;
 - failure-evidence plumbing.
 
-This avoids coupling framework correctness to public websites, DNS, vendor documentation, or unrelated content changes.
+This avoids coupling framework correctness to public websites, DNS, vendor documentation, unrelated content changes, or a foreign local listener.
 
 Production adoption replaces fixture-specific tests/page objects and `TEST_UI_BASE_URL`, not the lifecycle policy.
 
@@ -160,7 +163,9 @@ Evidence is treated as data with privacy and ownership constraints.
 
 `src/run_manifest.py` receives native pytest reports. In xdist mode, workers never write the shared run-level file; the controller receives worker reports and owns the single manifest.
 
-This prevents file races and preserves one authoritative summary.
+Retained node IDs, phases, and worker labels are bounded and credential-aware redaction is applied before serialization. URL user-info/query/fragment and common token/password/authorization assignments are removed. Non-finite durations are rejected and JSON serialization uses `allow_nan=False`, so the run manifest cannot silently emit non-standard numeric values.
+
+The manifest is written atomically through a temporary file. These contracts prevent file races, partial JSON, secret-bearing parameterized node IDs, and invalid numeric evidence while preserving one authoritative summary.
 
 ### Browser failure diagnostics
 
@@ -175,7 +180,7 @@ This prevents file races and preserves one authoritative summary.
 - URL query strings;
 - URL fragments.
 
-A screenshot and small redacted metadata envelope are retained when possible. Application-specific evidence may be added only with an explicit data-handling policy.
+Test labels used for browser evidence are bounded/redacted before they become retained metadata or artifact names. A screenshot and small redacted metadata envelope are retained when possible. Application-specific evidence may be added only with an explicit data-handling policy.
 
 ## Parallel execution
 
@@ -186,7 +191,7 @@ The framework contracts are:
 - xdist workers do not write the shared run manifest;
 - tests own mutable data they create;
 - browser sessions are test scoped;
-- local fixture process ownership is session scoped;
+- local fixture process ownership is session scoped and explicitly proven;
 - reports use per-run directories in CI where dimensions can execute independently.
 
 Adding parallelism before establishing these contracts would create faster nondeterminism rather than faster feedback.
@@ -240,9 +245,10 @@ When adding framework capability:
 2. keep application assertions outside infrastructure modules;
 3. validate external configuration before side effects;
 4. define lifecycle ownership for every created resource;
-5. define parallelism behavior before enabling concurrency;
-6. define evidence retention/redaction before collecting more data;
-7. preserve native tool errors when they already explain the failure;
-8. add framework contract tests for configuration or lifecycle behavior that could regress.
+5. prove readiness belongs to the process/resource that was actually created;
+6. define parallelism behavior before enabling concurrency;
+7. define evidence retention/redaction before collecting more data;
+8. preserve native tool errors when they already explain the failure;
+9. add framework contract tests for configuration or lifecycle behavior that could regress.
 
 A new layer should reduce ambiguity, not merely add indirection.
