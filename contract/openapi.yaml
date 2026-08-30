@@ -1,14 +1,18 @@
 openapi: 3.0.3
 info:
-  title: Mock Posts API
+  title: Repository-owned Posts API contract
   version: 1.0.0
+  description: >-
+    Executable HTTP response contract for the deterministic posts fixture used by
+    the pytest API and contract gates.
 paths:
   /posts:
     get:
-      summary: Get all posts
+      operationId: listPosts
+      summary: List posts
       responses:
         '200':
-          description: OK
+          description: Deterministic post collection
           content:
             application/json:
               schema:
@@ -17,33 +21,39 @@ paths:
                   $ref: '#/components/schemas/Post'
   /posts/{id}:
     get:
-      summary: Get post by ID
+      operationId: getPost
+      summary: Read one post
       parameters:
         - name: id
           in: path
           required: true
           schema:
             type: integer
+            minimum: 1
       responses:
         '200':
-          description: OK
+          description: Requested post
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Post'
         '404':
-          description: Not Found
+          description: No post exists for the requested identifier
 components:
   schemas:
     Post:
       type: object
+      additionalProperties: false
       properties:
         id:
           type: integer
+          minimum: 1
         title:
           type: string
+          minLength: 1
         body:
           type: string
+          minLength: 1
       required:
         - id
         - title
