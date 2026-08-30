@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "generator": {
+    "name": "pip-tools",
+    "version": "7.6.1",
+    "hashMode": "pip --require-hashes"
+  },
+  "source": {
+    "path": "requirements.txt",
+    "gitBlob": "6f7185fdb4f247fd058bf9ad0be0ad6e39d75a4a"
+  },
+  "locks": [
+    {
+      "python": "3.11",
+      "path": "requirements-lock/python-3.11.txt",
+      "gitBlob": "0d3983811a8490a34805d863202938e8fea95b44"
+    },
+    {
+      "python": "3.12",
+      "path": "requirements-lock/python-3.12.txt",
+      "gitBlob": "642019ba2ee2de6ea424f7ce569637bf6dffa03b"
+    },
+    {
+      "python": "3.13",
+      "path": "requirements-lock/python-3.13.txt",
+      "gitBlob": "59022de72aefb5488929a5287f83a43a9aa8bb57"
+    }
+  ]
+}
