@@ -8,11 +8,15 @@ on:
       - "conftest.py"
       - "requirements.txt"
       - "pyproject.toml"
+      - "contract/**"
+      - "performance/**"
       - "src/browser.py"
       - "src/config.py"
       - "src/pages/**"
       - "mock/**"
+      - "tests/contract/**"
       - "tests/e2e/**"
+      - "tests/performance/**"
       - ".github/workflows/extended.yml"
   schedule:
     - cron: "41 7 * * 3"
@@ -75,3 +79,71 @@ jobs:
           path: reports/${{ matrix.browser }}/
           if-no-files-found: ignore
           retention-days: 14
+
+  performance-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONUNBUFFERED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      TEST_BASE_URL: http://127.0.0.1:5000
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+      - name: Verify Locust target policy without traffic
+        run: pytest tests/performance
+      - name: Run bounded Locust script-health smoke against owned fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready_file="$(mktemp)"
+          rm -f "$ready_file"
+          MOCK_READY_FILE="$ready_file" python mock/server.py > /tmp/python-locust-fixture.log 2>&1 &
+          fixture_pid=$!
+          cleanup() {
+            kill "$fixture_pid" 2>/dev/null || true
+            wait "$fixture_pid" 2>/dev/null || true
+            rm -f "$ready_file"
+          }
+          trap cleanup EXIT
+
+          ready=false
+          for _ in {1..50}; do
+            if ! kill -0 "$fixture_pid" 2>/dev/null; then
+              cat /tmp/python-locust-fixture.log >&2
+              exit 1
+            fi
+            if [[ -s "$ready_file" ]]; then
+              python - "$ready_file" "$fixture_pid" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          token = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          assert token == {"pid": int(sys.argv[2]), "host": "127.0.0.1", "port": 5000}
+          PY
+              ready=true
+              break
+            fi
+            sleep 0.1
+          done
+          if [[ "$ready" != "true" ]]; then
+            echo "repository-owned fixture did not publish its ownership token" >&2
+            cat /tmp/python-locust-fixture.log >&2
+            exit 1
+          fi
+
+          locust \
+            -f performance/locustfile.py \
+            --headless \
+            --host "$TEST_BASE_URL" \
+            --users 1 \
+            --spawn-rate 1 \
+            --run-time 3s \
+            --only-summary \
+            --exit-code-on-error 1
