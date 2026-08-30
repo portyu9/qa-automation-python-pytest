@@ -25,3 +25,35 @@ jobs:
           python-version: '3.13'
       - name: Validate README contracts
         run: python .github/scripts/validate_readme.py
+
+  generate-locks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install pinned lock compiler
+        run: python -m pip install "pip-tools==7.6.1"
+      - name: Compile hash-locked dependency graph
+        run: |
+          mkdir -p generated-locks
+          pip-compile \
+            --generate-hashes \
+            --resolver=backtracking \
+            --strip-extras \
+            --output-file "generated-locks/python-${{ matrix.python }}.txt" \
+            requirements.txt
+      - name: Verify strict hash installation
+        run: python -m pip install --require-hashes -r "generated-locks/python-${{ matrix.python }}.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: python-${{ matrix.python }}-lock
+          path: generated-locks/python-${{ matrix.python }}.txt
+          if-no-files-found: error
+          retention-days: 1
