@@ -112,27 +112,25 @@ A requirement belongs at the **lowest layer that can conclusively prove it**.
 
 ```text
 .
-├── contract/openapi.yaml
-├── docs/{ARCHITECTURE.md,TEST_STRATEGY.md}
-├── mock/{data.json,server.py}
-├── performance/locustfile.py
+├── .github/
+│   ├── scripts/
+│   └── workflows/
+├── contract/
+├── docs/
+├── mock/
+├── performance/
 ├── src/
-│   ├── api_client.py
-│   ├── browser.py
-│   ├── config.py
-│   ├── db.py
-│   ├── http_client.py
-│   ├── pytest_capabilities.py
-│   ├── run_manifest.py
 │   ├── pages/
 │   └── repositories/
-├── tests/{api,contract,db,e2e,framework,performance,security,unit}/
-├── tests/framework/test_pytest_capabilities.py
-├── .github/workflows/{ci,docs,extended,security}.yml
-├── conftest.py
-├── pytest.ini
-├── pyproject.toml
-└── requirements.txt
+└── tests/
+    ├── api/
+    ├── contract/
+    ├── db/
+    ├── e2e/
+    ├── framework/
+    ├── performance/
+    ├── security/
+    └── unit/
 ```
 
 ## Quick start
