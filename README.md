@@ -27,13 +27,13 @@ A layered Python quality-engineering framework for deterministic **unit, API, co
 
 | Validation plane | What it proves | Default execution | Primary evidence |
 | --- | --- | --- | --- |
-| Fast CI | Unit, API, contract, persistence, framework invariants | Python 3.11 / 3.12 / 3.13 | JUnit, coverage XML, run manifest |
+| Fast CI | Unit, API, executable OpenAPI contract, persistence, framework invariants | Python 3.11 / 3.12 / 3.13 | JUnit, coverage XML, run manifest |
 | Native pytest surface | Parametrization, fixtures, marks, warnings/exceptions, mocking, asyncio, focused selection | Normal pytest collection | Native node IDs + pytest reports |
 | Browser CI | Critical Chrome workflow behavior | Selenium + headless Chrome + local fixture | JUnit, manifest, bounded diagnostics |
 | Extended browser | Engine compatibility | Chrome + Firefox | Per-browser JUnit + summaries |
 | Security | Dependency and repository-configuration risk | Trivy filesystem scan | JSON findings + Markdown summary |
 | Optional DAST | Active behavior of the controlled service | OWASP ZAP, loopback only | Alert classification |
-| Performance | Explicit workload experiments | Locust, approved target only | Native latency/throughput/error metrics |
+| Performance | Workload policy plus explicit latency/throughput experiments | Locust; bounded loopback script-health smoke in extended CI | Native Locust metrics |
 | Documentation | README/workflow/governance consistency | Repository-local validator | Actions status |
 
 ## Architecture
@@ -126,7 +126,7 @@ A requirement belongs at the **lowest layer that can conclusively prove it**.
 │   ├── run_manifest.py
 │   ├── pages/
 │   └── repositories/
-├── tests/{api,db,e2e,framework,performance,security,unit}/
+├── tests/{api,contract,db,e2e,framework,performance,security,unit}/
 ├── tests/framework/test_pytest_capabilities.py
 ├── .github/workflows/{ci,docs,extended,security}.yml
 ├── conftest.py
@@ -172,6 +172,10 @@ python .github/scripts/validate_readme.py
 pytest --ignore=tests/e2e --ignore=tests/performance --ignore=tests/security \
   --cov=src --cov-report=term-missing
 
+pytest tests/contract
+pytest tests/performance
+locust -f performance/locustfile.py --headless --host http://127.0.0.1:5000 \
+  --users 1 --spawn-rate 1 --run-time 3s --only-summary
 pytest tests/framework/test_pytest_capabilities.py --capability=parametrization
 TEST_BROWSER=chrome pytest tests/e2e -m smoke
 pytest tests/security -m security
@@ -231,9 +235,13 @@ Base URLs may contain path prefixes but not credentials, query strings, fragment
 
 ## Deterministic fixture and transport policy
 
-`mock/server.py` owns `/posts`, `/posts/<id>`, `/health`, `/ui`, and `/ui/details`. Required API and browser gates therefore exercise real HTTP/browser behavior without depending on public DNS, third-party uptime, rate limits, or content drift.
+`mock/server.py` owns `/posts`, `/posts/<id>`, `/health`, `/ui`, and `/ui/details`. Required API, OpenAPI contract, browser, and script-health performance gates therefore exercise real local behavior without depending on public DNS, third-party uptime, rate limits, or content drift.
 
 `src/http_client.py` centralizes persistent sessions, separate connect/read budgets, bounded retries, safe-method retry eligibility, `X-Test-Run-Id`, and deterministic close semantics. Assertion retries and blind retries around mutating requests are deliberately excluded.
+
+`contract/openapi.yaml` is executable: the fast contract suite validates the OpenAPI document and validates repository-owned provider responses against its committed response schema. Structural compatibility remains separate from semantic API assertions.
+
+`performance/locustfile.py` defaults to loopback. An external workload requires both `PERF_ALLOW_EXTERNAL=true` and an exact hostname in `PERF_ALLOWED_HOSTS`; changing `--host` alone is insufficient authorization. The extended workflow runs only a bounded single-user loopback smoke to prove workload health. Capacity, saturation, and service-level conclusions require an explicitly designed experiment against an approved environment.
 
 ## Persistence policy
 
@@ -241,8 +249,8 @@ SQLAlchemy tests use deterministic SQLite state while retaining explicit session
 
 ## CI and evidence
 
-- `ci.yml` — source quality, xdist ownership contract, Python compatibility, fast layers, deterministic Chrome.
-- `extended.yml` — Chrome/Firefox compatibility on relevant changes, `main`, schedule, and manual dispatch.
+- `ci.yml` — source quality, xdist ownership contract, Python compatibility, fast layers including executable OpenAPI contracts, deterministic Chrome.
+- `extended.yml` — Chrome/Firefox compatibility plus a bounded loopback Locust script-health smoke on relevant changes, `main`, schedule, and manual dispatch.
 - `security.yml` — independent Trivy repository gate.
 - `docs.yml` — local-link/badge/Mermaid/governance validation without external-site uptime coupling.
 
@@ -293,6 +301,6 @@ Dependabot version updates complement, rather than replace, vulnerability scanni
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — configuration, transport, persistence, Selenium lifecycle, parallelism, and evidence boundaries.
 - [`docs/TEST_STRATEGY.md`](docs/TEST_STRATEGY.md) — layer selection, browser coverage, reliability, security, performance, and CI gates.
-- [`contract/openapi.yaml`](contract/openapi.yaml) — version-controlled API contract.
+- [`contract/openapi.yaml`](contract/openapi.yaml) — version-controlled executable API contract.
 
 The framework should evolve by making **test intent clearer, dependencies more explicit, failures more attributable, and retained evidence safer**. New abstraction is justified only when it enforces a durable engineering policy or removes a demonstrated source of ambiguity.
