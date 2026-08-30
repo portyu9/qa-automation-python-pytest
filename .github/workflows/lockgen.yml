@@ -1,0 +1,71 @@
+name: lockgen
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/lockgen.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch-readme:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.head_ref }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.13'
+      - name: Apply asserted README replacements
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('README.md')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  "├── performance/\n├── src/",
+                  "├── performance/\n├── requirements-lock/\n├── src/",
+              ),
+              (
+                  "Python 3.11+ is exercised by CI.\n\n```bash\npython -m venv .venv\nsource .venv/bin/activate          # Windows PowerShell: .venv\\Scripts\\Activate.ps1\npython -m pip install --upgrade pip\npip install -r requirements.txt\npytest --ignore=tests/e2e --ignore=tests/performance --ignore=tests/security\n```",
+                  "Python 3.11, 3.12, and 3.13 are exercised by CI. `requirements.txt` is the human-maintained direct compatibility input; CI installs a generated, interpreter-specific hash lock. Choose the lock matching the active Python minor version.\n\n```bash\npython -m venv .venv\nsource .venv/bin/activate          # Windows PowerShell: .venv\\Scripts\\Activate.ps1\npython -m pip install --require-hashes -r requirements-lock/python-3.12.txt\npytest --ignore=tests/e2e --ignore=tests/performance --ignore=tests/security\n```\n\nFor Python 3.11 or 3.13, use the corresponding file in `requirements-lock/`. Use `pip install -r requirements.txt` only when intentionally resolving dependency changes and regenerating the supported-interpreter locks; it is not the CI installation path.",
+              ),
+              (
+                  "- `ci.yml` — source quality, xdist ownership contract, Python compatibility, fast layers including executable OpenAPI contracts, deterministic Chrome.\n- `extended.yml` — Chrome/Firefox compatibility plus a bounded loopback Locust script-health smoke on relevant changes, `main`, schedule, and manual dispatch.",
+                  "- `ci.yml` — source quality, xdist ownership contract, Python compatibility, interpreter-specific `--require-hashes` installs, fast layers including executable OpenAPI contracts, deterministic Chrome.\n- `extended.yml` — Python 3.12 hash-locked Chrome/Firefox compatibility plus a bounded loopback Locust script-health smoke on relevant changes, `main`, schedule, and manual dispatch.",
+              ),
+              (
+                  "## Dependency maintenance\n\nDependabot is configured for **pip** and **GitHub Actions**.\n\n- version updates run weekly on Monday at 09:00 America/New_York;\n- routine minor/patch updates are grouped to reduce review noise;\n- major upgrades remain isolated so compatibility changes stay attributable;\n- GitHub Actions are maintained as their own dependency surface;\n- dependency PRs are not assumed safe because they are automated—CI, security, docs, release notes, and behavioral impact still decide mergeability.\n\nDependabot version updates complement, rather than replace, vulnerability scanning. Repository security policy and Trivy remain independent controls.",
+                  "## Dependency maintenance\n\nDependabot is configured for **pip** and **GitHub Actions**. `requirements.txt` declares bounded direct compatibility, while `requirements-lock/python-3.11.txt`, `python-3.12.txt`, and `python-3.13.txt` are generated resolution artifacts for the supported CI interpreters. Each lock pins the complete resolved graph and package hashes; production CI installs with `pip --require-hashes`.\n\n- version updates run weekly on Monday at 09:00 America/New_York;\n- routine minor/patch updates are grouped to reduce review noise;\n- major upgrades remain isolated so compatibility changes stay attributable;\n- GitHub Actions are maintained as their own dependency surface;\n- dependency changes require intentional lock regeneration for all three supported Python minors and strict-hash installation validation;\n- dependency PRs are not assumed safe because they are automated—CI, security, docs, release notes, resolved-graph review, and behavioral impact still decide mergeability.\n\nThe compatibility manifest and generated locks have different jobs: `requirements.txt` expresses allowed direct ranges; the committed locks make CI resolution reproducible. Dependabot version updates complement, rather than replace, vulnerability scanning. Repository security policy and Trivy remain independent controls.",
+              ),
+              (
+                  "| Configuration contract | Invalid framework/runtime input |",
+                  "| Configuration contract | Invalid framework/runtime input |\n| Hash-locked install | Dependency graph drift, missing artifact hash, or wrong interpreter lock |",
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one README match, found {count}: {old[:80]!r}')
+              text = text.replace(old, new)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+      - name: Commit README-only change
+        run: |
+          set -euo pipefail
+          git add README.md
+          git diff --cached --name-only | grep -Fx 'README.md'
+          test "$(git diff --cached --name-only | wc -l)" -eq 1
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'docs: describe hash-locked Python dependency policy'
+          git push origin "HEAD:${GITHUB_HEAD_REF}"
