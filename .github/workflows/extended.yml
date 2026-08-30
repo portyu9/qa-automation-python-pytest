@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   cross-browser:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -47,8 +47,8 @@ jobs:
       TEST_RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.browser }}
       TEST_REPORT_DIR: reports/${{ matrix.browser }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
           cache: pip
@@ -73,7 +73,7 @@ jobs:
           } | tee "reports/${{ matrix.browser }}/summary.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload cross-browser evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: python-${{ matrix.browser }}-extended-evidence
           path: reports/${{ matrix.browser }}/
@@ -81,15 +81,15 @@ jobs:
           retention-days: 14
 
   performance-smoke:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
       PYTHONUNBUFFERED: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       TEST_BASE_URL: http://127.0.0.1:5000
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
           cache: pip
