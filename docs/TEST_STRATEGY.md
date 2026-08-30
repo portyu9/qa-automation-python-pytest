@@ -71,6 +71,7 @@ Do not move large data matrices, API validation, or database assertions into the
 
 The committed browser smoke test targets the repository-local Flask UI fixture. Its purpose is to verify framework behavior independently of third-party availability:
 
+- ownership of the fixture listener by the child process started for the test session;
 - Selenium driver construction;
 - test-scoped isolation;
 - explicit synchronization;
@@ -78,6 +79,8 @@ The committed browser smoke test targets the repository-local Flask UI fixture. 
 - navigation;
 - failure diagnostics;
 - browser teardown.
+
+Readiness is not defined as “something answers on port 5000.” The child publishes an atomic private ownership token containing its PID/host/port only after successful bind; the parent validates that token and fails if the child exits before ownership is established. This prevents an unrelated local process from creating a false-green fixture signal.
 
 Application adoption changes the target and domain page objects while keeping those infrastructure contracts.
 
@@ -165,6 +168,7 @@ The framework permits xdist for fast contracts while maintaining these invariant
 - mutable state is isolated per test or worker;
 - generated evidence uses collision-safe paths;
 - browser sessions are independent;
+- the session-scoped local fixture proves child/listener ownership instead of trusting port reachability;
 - test order is not a prerequisite for correctness.
 
 Tests requiring exclusive mutable infrastructure should be marked and scheduled deliberately rather than relying on incidental serial execution.
@@ -237,7 +241,9 @@ A short smoke load can prove script health. It cannot establish production capac
 
 Evidence should be sufficient to classify a failure without collecting unnecessary application data.
 
-The generic browser collector keeps a bounded envelope and deliberately excludes cookies, browser storage, page source, response bodies, URL credentials, queries, and fragments. Screenshots are failure-only.
+The run manifest keeps one controller-owned JSON document even under xdist. Retained node IDs/phases/worker labels are bounded and credential-aware redaction removes URL user-info/query/fragment and common token/password/authorization assignments before serialization. Non-finite durations are rejected and JSON output disallows NaN/infinity values. The write is atomic so an interrupted run cannot leave a partial manifest.
+
+The generic browser collector keeps a bounded envelope and deliberately excludes cookies, browser storage, page source, response bodies, URL credentials, queries, and fragments. Browser test labels are also bounded/redacted before they become evidence identity. Screenshots are failure-only.
 
 Before adding richer evidence, decide:
 
@@ -284,11 +290,12 @@ A test is ready to act as a gate when:
 - the requirement being proved is clear;
 - the layer is appropriate for that requirement;
 - setup and cleanup ownership are deterministic;
+- readiness proves ownership of the resource/process that the test created rather than merely observing a reachable endpoint;
 - environment assumptions are validated;
 - synchronization is based on observable state;
 - retries, if any, are justified by a classified transient condition;
 - execution order is irrelevant unless explicitly declared;
-- evidence is safe and sufficient;
+- evidence is safe, standards-compliant, and sufficient;
 - a failure points toward a specific product, framework, or environment boundary.
 
 The value of a suite is determined by the quality of its signal, not by its raw test count.
