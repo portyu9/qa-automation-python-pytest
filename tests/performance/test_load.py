@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from performance.locustfile import DEFAULT_TARGET, validate_load_target
+from performance.target_policy import DEFAULT_TARGET, validate_load_target
 
 
 @pytest.mark.performance
