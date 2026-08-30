@@ -7,6 +7,7 @@ on:
     paths:
       - "conftest.py"
       - "requirements.txt"
+      - "requirements-lock/**"
       - "pyproject.toml"
       - "contract/**"
       - "performance/**"
@@ -52,8 +53,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements.txt
+          cache-dependency-path: requirements-lock/python-3.12.txt
+      - name: Install hash-locked Python 3.12 dependency graph
+        run: python -m pip install --require-hashes -r requirements-lock/python-3.12.txt
       - name: Run Selenium compatibility contract
         run: >-
           pytest tests/e2e
@@ -68,6 +70,7 @@ jobs:
             echo "- Run ID: \`${TEST_RUN_ID}\`"
             echo "- Browser: \`${{ matrix.browser }}\`"
             echo "- Python: \`3.12\`"
+            echo '- Dependencies: hash-locked graph (`--require-hashes`)'
             echo "- Job status: \`${{ job.status }}\`"
             echo "- Evidence: JUnit + controller-owned run manifest + bounded failure diagnostics"
           } | tee "reports/${{ matrix.browser }}/summary.md" >> "$GITHUB_STEP_SUMMARY"
@@ -93,8 +96,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements.txt
+          cache-dependency-path: requirements-lock/python-3.12.txt
+      - name: Install hash-locked Python 3.12 dependency graph
+        run: python -m pip install --require-hashes -r requirements-lock/python-3.12.txt
       - name: Verify Locust target policy without traffic
         run: pytest tests/performance
       - name: Run bounded Locust script-health smoke against owned fixture
