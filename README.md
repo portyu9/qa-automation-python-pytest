@@ -119,6 +119,7 @@ A requirement belongs at the **lowest layer that can conclusively prove it**.
 ├── docs/
 ├── mock/
 ├── performance/
+├── requirements-lock/
 ├── src/
 │   ├── pages/
 │   └── repositories/
@@ -135,15 +136,16 @@ A requirement belongs at the **lowest layer that can conclusively prove it**.
 
 ## Quick start
 
-Python 3.11+ is exercised by CI.
+Python 3.11, 3.12, and 3.13 are exercised by CI. `requirements.txt` is the human-maintained direct compatibility input; CI installs a generated, interpreter-specific hash lock. Choose the lock matching the active Python minor version.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate          # Windows PowerShell: .venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install --require-hashes -r requirements-lock/python-3.12.txt
 pytest --ignore=tests/e2e --ignore=tests/performance --ignore=tests/security
 ```
+
+For Python 3.11 or 3.13, use the corresponding file in `requirements-lock/`. Use `pip install -r requirements.txt` only when intentionally resolving dependency changes and regenerating the supported-interpreter locks; it is not the CI installation path.
 
 Run browser compatibility explicitly:
 
@@ -247,8 +249,8 @@ SQLAlchemy tests use deterministic SQLite state while retaining explicit session
 
 ## CI and evidence
 
-- `ci.yml` — source quality, xdist ownership contract, Python compatibility, fast layers including executable OpenAPI contracts, deterministic Chrome.
-- `extended.yml` — Chrome/Firefox compatibility plus a bounded loopback Locust script-health smoke on relevant changes, `main`, schedule, and manual dispatch.
+- `ci.yml` — source quality, xdist ownership contract, Python compatibility, interpreter-specific `--require-hashes` installs, fast layers including executable OpenAPI contracts, deterministic Chrome.
+- `extended.yml` — Python 3.12 hash-locked Chrome/Firefox compatibility plus a bounded loopback Locust script-health smoke on relevant changes, `main`, schedule, and manual dispatch.
 - `security.yml` — independent Trivy repository gate.
 - `docs.yml` — local-link/badge/Mermaid/governance validation without external-site uptime coupling.
 
@@ -256,15 +258,16 @@ SQLAlchemy tests use deterministic SQLite state while retaining explicit session
 
 ## Dependency maintenance
 
-Dependabot is configured for **pip** and **GitHub Actions**.
+Dependabot is configured for **pip** and **GitHub Actions**. `requirements.txt` declares bounded direct compatibility, while `requirements-lock/python-3.11.txt`, `python-3.12.txt`, and `python-3.13.txt` are generated resolution artifacts for the supported CI interpreters. Each lock pins the complete resolved graph and package hashes; production CI installs with `pip --require-hashes`.
 
 - version updates run weekly on Monday at 09:00 America/New_York;
 - routine minor/patch updates are grouped to reduce review noise;
 - major upgrades remain isolated so compatibility changes stay attributable;
 - GitHub Actions are maintained as their own dependency surface;
-- dependency PRs are not assumed safe because they are automated—CI, security, docs, release notes, and behavioral impact still decide mergeability.
+- dependency changes require intentional lock regeneration for all three supported Python minors and strict-hash installation validation;
+- dependency PRs are not assumed safe because they are automated—CI, security, docs, release notes, resolved-graph review, and behavioral impact still decide mergeability.
 
-Dependabot version updates complement, rather than replace, vulnerability scanning. Repository security policy and Trivy remain independent controls.
+The compatibility manifest and generated locks have different jobs: `requirements.txt` expresses allowed direct ranges; the committed locks make CI resolution reproducible. Dependabot version updates complement, rather than replace, vulnerability scanning. Repository security policy and Trivy remain independent controls.
 
 ## Failure triage
 
@@ -272,6 +275,7 @@ Dependabot version updates complement, rather than replace, vulnerability scanni
 | --- | --- |
 | Capability selection/discovery | Marker/selector contract; confirm intended slice before debugging test logic |
 | Configuration contract | Invalid framework/runtime input |
+| Hash-locked install | Dependency graph drift, missing artifact hash, or wrong interpreter lock |
 | Local fixture startup | Repository-owned service lifecycle |
 | HTTP transport | Connectivity/timeout/retry policy |
 | API assertion/schema | Protocol/semantic/contract behavior |
