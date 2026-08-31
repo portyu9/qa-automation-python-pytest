@@ -18,6 +18,7 @@ on:
       - "tests/contract/**"
       - "tests/e2e/**"
       - "tests/performance/**"
+      - ".github/scripts/**"
       - ".github/workflows/extended.yml"
   schedule:
     - cron: "41 7 * * 3"
@@ -30,8 +31,13 @@ concurrency:
   group: python-extended-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
 jobs:
   cross-browser:
+    name: Python 3.14 / ${{ matrix.browser }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     strategy:
@@ -39,75 +45,102 @@ jobs:
       matrix:
         browser: [chrome, firefox]
     env:
-      PYTHONUNBUFFERED: "1"
-      PIP_DISABLE_PIP_VERSION_CHECK: "1"
       TEST_BASE_URL: http://127.0.0.1:5000
       TEST_UI_BASE_URL: http://127.0.0.1:5000/ui
       TEST_BROWSER: ${{ matrix.browser }}
       TEST_HEADLESS: "true"
-      TEST_RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.browser }}
+      TEST_RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}-py314-${{ matrix.browser }}
       TEST_REPORT_DIR: reports/${{ matrix.browser }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache: pip
-          cache-dependency-path: requirements-lock/python-3.12.txt
-      - name: Install hash-locked Python 3.12 dependency graph
-        run: python -m pip install --require-hashes -r requirements-lock/python-3.12.txt
+          cache-dependency-path: requirements-lock/python-3.14.txt
+      - name: Install hash-locked Python 3.14 dependency graph
+        run: |
+          python -m pip install --require-hashes -r requirements-lock/python-3.14.txt
+          python -m pip check
       - name: Run Selenium compatibility contract
         run: >-
           pytest tests/e2e
           --junitxml=reports/${{ matrix.browser }}/junit.xml
+      - name: Validate meaningful browser evidence
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          browser = os.environ["TEST_BROWSER"]
+          report_dir = Path(os.environ["TEST_REPORT_DIR"])
+          junit = report_dir / "junit.xml"
+          manifest = report_dir / "run-manifest.json"
+          if not junit.is_file() or junit.stat().st_size == 0:
+              raise SystemExit(f"missing {browser} JUnit evidence")
+          executed = len(ET.parse(junit).getroot().findall(".//testcase"))
+          if executed <= 0:
+              raise SystemExit(f"{browser} JUnit evidence contains zero executed tests")
+          payload = json.loads(manifest.read_text(encoding="utf-8"))
+          if payload["summary"]["total"] <= 0:
+              raise SystemExit(f"{browser} run manifest contains zero outcomes")
+          print(
+              f"validated Python 3.14 / {browser} evidence: "
+              f"tests={executed}, outcomes={payload['summary']['total']}"
+          )
+          PY
       - name: Publish browser observability summary
         if: always()
         run: |
           mkdir -p "reports/${{ matrix.browser }}"
           {
-            echo "### pytest / Selenium · ${{ matrix.browser }}"
+            echo "### pytest / Selenium · ${{ matrix.browser }} · Python 3.14"
             echo
             echo "- Run ID: \`${TEST_RUN_ID}\`"
             echo "- Browser: \`${{ matrix.browser }}\`"
-            echo "- Python: \`3.12\`"
-            echo '- Dependencies: hash-locked graph (`--require-hashes`)'
+            echo '- Python: `3.14`'
+            echo '- Dependencies: hash-locked graph (`--require-hashes`) + `pip check`'
             echo "- Job status: \`${{ job.status }}\`"
-            echo "- Evidence: JUnit + controller-owned run manifest + bounded failure diagnostics"
+            echo '- Evidence: validated JUnit + controller-owned run manifest + bounded failure diagnostics'
           } | tee "reports/${{ matrix.browser }}/summary.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload cross-browser evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: python-${{ matrix.browser }}-extended-evidence
+          name: python314-${{ matrix.browser }}-extended-evidence
           path: reports/${{ matrix.browser }}/
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 14
 
   performance-smoke:
+    name: Python 3.14 / bounded Locust smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
-      PYTHONUNBUFFERED: "1"
-      PIP_DISABLE_PIP_VERSION_CHECK: "1"
       TEST_BASE_URL: http://127.0.0.1:5000
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache: pip
-          cache-dependency-path: requirements-lock/python-3.12.txt
-      - name: Install hash-locked Python 3.12 dependency graph
-        run: python -m pip install --require-hashes -r requirements-lock/python-3.12.txt
+          cache-dependency-path: requirements-lock/python-3.14.txt
+      - name: Install hash-locked Python 3.14 dependency graph
+        run: |
+          python -m pip install --require-hashes -r requirements-lock/python-3.14.txt
+          python -m pip check
       - name: Verify Locust target policy without traffic
         run: pytest tests/performance
       - name: Run bounded Locust script-health smoke against owned fixture
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p reports/performance
           ready_file="$(mktemp)"
           rm -f "$ready_file"
-          MOCK_READY_FILE="$ready_file" python mock/server.py > /tmp/python-locust-fixture.log 2>&1 &
+          MOCK_READY_FILE="$ready_file" python mock/server.py > reports/performance/fixture.log 2>&1 &
           fixture_pid=$!
           cleanup() {
             kill "$fixture_pid" 2>/dev/null || true
@@ -119,7 +152,7 @@ jobs:
           ready=false
           for _ in {1..50}; do
             if ! kill -0 "$fixture_pid" 2>/dev/null; then
-              cat /tmp/python-locust-fixture.log >&2
+              cat reports/performance/fixture.log >&2
               exit 1
             fi
             if [[ -s "$ready_file" ]]; then
@@ -138,7 +171,7 @@ jobs:
           done
           if [[ "$ready" != "true" ]]; then
             echo "repository-owned fixture did not publish its ownership token" >&2
-            cat /tmp/python-locust-fixture.log >&2
+            cat reports/performance/fixture.log >&2
             exit 1
           fi
 
@@ -150,4 +183,41 @@ jobs:
             --spawn-rate 1 \
             --run-time 3s \
             --only-summary \
+            --csv reports/performance/locust \
             --exit-code-on-error 1
+      - name: Validate Locust evidence
+        run: |
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          stats = Path("reports/performance/locust_stats.csv")
+          if not stats.is_file() or stats.stat().st_size == 0:
+              raise SystemExit("Locust did not produce stats evidence")
+          with stats.open(newline="", encoding="utf-8") as handle:
+              rows = list(csv.DictReader(handle))
+          if not rows:
+              raise SystemExit("Locust stats evidence contains no measured request rows")
+          print(f"validated Locust evidence rows={len(rows)}")
+          PY
+      - name: Publish performance summary
+        if: always()
+        run: |
+          mkdir -p reports/performance
+          {
+            echo '### Locust script-health smoke · Python 3.14'
+            echo
+            echo '- Target: repository-owned loopback fixture only'
+            echo '- Workload: 1 user, spawn rate 1/s, 3 seconds'
+            echo "- Job status: \`${{ job.status }}\`"
+            echo '- Evidence: Locust CSV metrics + fixture lifecycle log'
+            echo '- Interpretation: script/target-policy health only; this is not a capacity or SLO result'
+          } | tee reports/performance/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload performance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python314-locust-smoke-evidence
+          path: reports/performance/
+          if-no-files-found: error
+          retention-days: 14

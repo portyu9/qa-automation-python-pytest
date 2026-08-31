@@ -25,16 +25,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache: pip
-          cache-dependency-path: requirements-lock/python-3.12.txt
-      - name: Install hash-locked Python 3.12 dependency graph
-        run: python -m pip install --require-hashes -r requirements-lock/python-3.12.txt
-      - run: ruff check .
-      - run: python -m compileall -q src tests
+          cache-dependency-path: requirements-lock/python-3.14.txt
+      - name: Install hash-locked Python 3.14 dependency graph
+        run: python -m pip install --require-hashes -r requirements-lock/python-3.14.txt
+      - name: Validate lock provenance and installed graph
+        run: |
+          python .github/scripts/validate_dependency_locks.py
+          python -m pip check
+      - name: Lint Python
+        run: ruff check .
+      - name: Compile Python sources and tests
+        run: python -m compileall -q src tests
       - name: Validate xdist run-manifest ownership
         env:
           TEST_REPORT_DIR: reports/xdist-contract
@@ -58,17 +64,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12", "3.13"]
+        python: ["3.11", "3.12", "3.13", "3.14"]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: requirements-lock/python-${{ matrix.python }}.txt
       - name: Install hash-locked dependency graph for Python ${{ matrix.python }}
-        run: python -m pip install --require-hashes -r "requirements-lock/python-${{ matrix.python }}.txt"
+        run: |
+          python -m pip install --require-hashes -r "requirements-lock/python-${{ matrix.python }}.txt"
+          python -m pip check
       - name: Run fast test gate
         run: >-
           pytest
@@ -79,6 +87,39 @@ jobs:
           --cov=src
           --cov-report=xml:reports/coverage-${{ matrix.python }}.xml
           --cov-report=term-missing
+      - name: Validate meaningful fast-test evidence
+        env:
+          PYTHON_VERSION: ${{ matrix.python }}
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          version = os.environ["PYTHON_VERSION"]
+          junit = Path(f"reports/junit-{version}.xml")
+          coverage = Path(f"reports/coverage-{version}.xml")
+          if not junit.is_file() or junit.stat().st_size == 0:
+              raise SystemExit(f"missing JUnit evidence: {junit}")
+          if not coverage.is_file() or coverage.stat().st_size == 0:
+              raise SystemExit(f"missing coverage evidence: {coverage}")
+
+          junit_root = ET.parse(junit).getroot()
+          executed = len(junit_root.findall(".//testcase"))
+          if executed <= 0:
+              raise SystemExit("JUnit evidence contains zero executed tests")
+
+          coverage_root = ET.parse(coverage).getroot()
+          lines_valid = int(coverage_root.attrib.get("lines-valid", "0"))
+          lines_covered = int(coverage_root.attrib.get("lines-covered", "0"))
+          if lines_valid <= 0 or lines_covered <= 0:
+              raise SystemExit("coverage evidence contains no measured source lines")
+
+          print(
+              f"validated Python {version} evidence: "
+              f"tests={executed}, covered_lines={lines_covered}/{lines_valid}"
+          )
+          PY
       - name: Publish functional observability summary
         if: always()
         env:
@@ -109,16 +150,16 @@ jobs:
             echo
             echo "- Run ID: \`${TEST_RUN_ID}\`"
             echo "- Job status: \`${JOB_STATUS}\`"
-            echo '- Dependencies: interpreter-specific hash-locked graph (`--require-hashes`)'
-            echo '- Evidence: JUnit + coverage XML + run manifest + CI observability envelope'
+            echo '- Dependencies: interpreter-specific hash-locked graph (`--require-hashes`) + `pip check`'
+            echo '- Evidence: validated JUnit + coverage XML + run manifest + CI observability envelope'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload functional evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: python-${{ matrix.python }}-reports
           path: reports/
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 14
 
   browser:
@@ -126,20 +167,40 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache: pip
-          cache-dependency-path: requirements-lock/python-3.12.txt
-      - name: Install hash-locked Python 3.12 dependency graph
-        run: python -m pip install --require-hashes -r requirements-lock/python-3.12.txt
+          cache-dependency-path: requirements-lock/python-3.14.txt
+      - name: Install hash-locked Python 3.14 dependency graph
+        run: |
+          python -m pip install --require-hashes -r requirements-lock/python-3.14.txt
+          python -m pip check
       - name: Run deterministic Chrome/Selenium gate
         env:
           TEST_BROWSER: chrome
           TEST_HEADLESS: "true"
           TEST_REPORT_DIR: reports/browser
         run: pytest tests/e2e --junitxml=reports/browser/junit.xml
+      - name: Validate meaningful browser evidence
+        run: |
+          python - <<'PY'
+          import json
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          junit = Path("reports/browser/junit.xml")
+          manifest = Path("reports/browser/run-manifest.json")
+          if not junit.is_file() or junit.stat().st_size == 0:
+              raise SystemExit("missing browser JUnit evidence")
+          if len(ET.parse(junit).getroot().findall(".//testcase")) <= 0:
+              raise SystemExit("browser JUnit evidence contains zero executed tests")
+          payload = json.loads(manifest.read_text(encoding="utf-8"))
+          if payload["summary"]["total"] <= 0:
+              raise SystemExit("browser run manifest contains zero outcomes")
+          print(f"validated browser evidence outcomes={payload['summary']['total']}")
+          PY
       - name: Publish browser observability summary
         if: always()
         env:
@@ -155,7 +216,7 @@ jobs:
               "schemaVersion": 1,
               "framework": "pytest-selenium",
               "runId": os.environ["TEST_RUN_ID"],
-              "dimension": {"python": "3.12", "browser": "chrome"},
+              "dimension": {"python": "3.14", "browser": "chrome"},
               "status": os.environ["JOB_STATUS"],
               "sha": os.environ["GITHUB_SHA"],
               "ref": os.environ["GITHUB_REF"],
@@ -165,18 +226,18 @@ jobs:
           )
           PY
           {
-            echo '### pytest / Selenium · Chrome'
+            echo '### pytest / Selenium · Chrome · Python 3.14'
             echo
             echo "- Run ID: \`${TEST_RUN_ID}\`"
             echo "- Job status: \`${JOB_STATUS}\`"
-            echo '- Dependencies: Python 3.12 hash-locked graph (`--require-hashes`)'
-            echo '- Evidence: JUnit + run manifest + redacted browser failure diagnostics'
+            echo '- Dependencies: Python 3.14 hash-locked graph (`--require-hashes`) + `pip check`'
+            echo '- Evidence: validated JUnit + run manifest + redacted browser failure diagnostics'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload browser evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: browser-evidence
           path: reports/browser/
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 14

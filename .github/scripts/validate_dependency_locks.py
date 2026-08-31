@@ -14,7 +14,7 @@ except ModuleNotFoundError:  # pip vendors packaging on supported CI interpreter
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = ROOT / "requirements-lock" / "manifest.json"
-EXPECTED_PYTHONS = {"3.11", "3.12", "3.13"}
+EXPECTED_PYTHONS = {"3.11", "3.12", "3.13", "3.14"}
 PIN_RE = re.compile(r"^([A-Za-z0-9_.-]+)==([^\s\\]+)", re.MULTILINE)
 
 
