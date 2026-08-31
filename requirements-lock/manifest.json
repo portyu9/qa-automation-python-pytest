@@ -24,6 +24,11 @@
       "python": "3.13",
       "path": "requirements-lock/python-3.13.txt",
       "gitBlob": "59022de72aefb5488929a5287f83a43a9aa8bb57"
+    },
+    {
+      "python": "3.14",
+      "path": "requirements-lock/python-3.14.txt",
+      "gitBlob": "284471963bc66508362afe415db954293a2dc3d7"
     }
   ]
 }

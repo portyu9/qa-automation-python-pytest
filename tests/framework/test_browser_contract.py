@@ -2,7 +2,13 @@ import json
 
 import pytest
 
-from src.browser import _redact_url, capture_failure_evidence
+from src.browser import (
+    _ResourceSafeFirefoxService,
+    _redact_url,
+    capture_failure_evidence,
+    create_driver,
+)
+from src.config import TestSettings as RuntimeSettings
 
 
 @pytest.mark.unit
@@ -60,3 +66,47 @@ def test_browser_evidence_paths_remain_unique_after_label_redaction(tmp_path):
         assert "secret" not in metadata["test"]
         assert metadata["currentUrl"] == "https://example.test/ui"
         assert metadata["screenshot"]
+
+
+@pytest.mark.unit
+def test_firefox_driver_uses_resource_safe_service(monkeypatch):
+    captured = {}
+
+    class StubDriver:
+        def set_window_size(self, width, height):
+            captured["window"] = (width, height)
+
+        def implicitly_wait(self, seconds):
+            captured["implicit_wait"] = seconds
+
+        def set_page_load_timeout(self, seconds):
+            captured["page_load_timeout"] = seconds
+
+        def set_script_timeout(self, seconds):
+            captured["script_timeout"] = seconds
+
+    def fake_firefox(*, options, service):
+        captured["options"] = options
+        captured["service"] = service
+        return StubDriver()
+
+    monkeypatch.setattr("src.browser.webdriver.Firefox", fake_firefox)
+    settings = RuntimeSettings(
+        base_url="http://127.0.0.1:5000",
+        ui_base_url="http://127.0.0.1:5000/ui",
+        browser="firefox",
+        headless=True,
+        browser_timeout_seconds=10.0,
+        connect_timeout_seconds=5.0,
+        read_timeout_seconds=15.0,
+        retry_total=2,
+        run_id="firefox-service-contract",
+    )
+
+    assert create_driver(settings).__class__ is StubDriver
+    assert isinstance(captured["service"], _ResourceSafeFirefoxService)
+    assert "-headless" in captured["options"].arguments
+    assert captured["window"] == (1440, 1000)
+    assert captured["implicit_wait"] == 0
+    assert captured["page_load_timeout"] == 10.0
+    assert captured["script_timeout"] == 10.0

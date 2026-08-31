@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from selenium import webdriver
 from selenium.common.exceptions import WebDriverException
+from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.remote.webdriver import WebDriver
 
 from src.config import TestSettings
@@ -17,6 +18,22 @@ from src.run_manifest import redact_text
 
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+class _ResourceSafeFirefoxService(FirefoxService):
+    """Stop geckodriver without Selenium's unsupported remote-shutdown probe.
+
+    Selenium 4.48's base Service probes ``/shutdown`` through ``urllib`` before
+    terminating the driver process. Geckodriver returns HTTP 405 for that
+    endpoint; on Python 3.14 the caught-but-unclosed ``HTTPError`` response is
+    surfaced as a ``ResourceWarning``. The base ``Service.stop`` method always
+    terminates the process after this hook, so skipping the unsupported probe
+    preserves deterministic process cleanup without suppressing resource
+    warnings for framework-owned code.
+    """
+
+    def send_remote_shutdown_command(self) -> None:
+        """Let the inherited stop path terminate geckodriver directly."""
 
 
 def create_driver(settings: TestSettings) -> WebDriver:
@@ -38,7 +55,10 @@ def create_driver(settings: TestSettings) -> WebDriver:
         options = webdriver.FirefoxOptions()
         if settings.headless:
             options.add_argument("-headless")
-        driver = webdriver.Firefox(options=options)
+        driver = webdriver.Firefox(
+            options=options,
+            service=_ResourceSafeFirefoxService(),
+        )
         driver.set_window_size(1440, 1000)
     else:  # Defensive guard; TestSettings rejects unsupported values first.
         raise ValueError(f"unsupported browser {settings.browser!r}")
