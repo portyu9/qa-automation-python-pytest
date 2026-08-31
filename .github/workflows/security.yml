@@ -12,15 +12,37 @@ permissions:
   contents: read
 
 concurrency:
-  group: security-${{ github.repository }}-${{ github.ref }}
+  group: security-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  trivy:
+  codeql:
+    name: CodeQL
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          languages: python
+          queries: security-extended
+      - name: Analyze
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+
+  trivy:
+    name: Trivy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Prepare evidence directory
         run: mkdir -p reports/security
       - name: Scan dependencies, configuration, and repository secrets
@@ -66,9 +88,51 @@ jobs:
           } | tee "$summary" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload security evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: trivy-security-evidence
+          name: trivy-security-evidence-${{ github.run_id }}
           path: reports/security/
           if-no-files-found: ignore
           retention-days: 14
+
+  dependency-review:
+    name: dependency-review
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Probe GitHub Dependency graph
+        id: dependency-graph
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "repos/$GITHUB_REPOSITORY/dependency-graph/sbom" >/dev/null 2>&1; then
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+            echo 'GitHub Dependency graph is available; running change-aware Dependency Review.'
+          else
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            echo '::warning::GitHub Dependency graph is unavailable; the workflow-level Trivy HIGH/CRITICAL gate remains authoritative, but change-aware Dependency Review cannot run.'
+            {
+              echo '### Dependency Review fallback'
+              echo
+              echo 'GitHub Dependency graph is unavailable for this repository, so pull-request diff analysis cannot run.'
+              echo 'The independent Trivy job still fails this security workflow on fixed HIGH/CRITICAL dependency findings, HIGH/CRITICAL supported misconfigurations, or gated secret findings. Enable Dependency graph in repository security settings to add the stronger change-aware review.'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Review dependency changes
+        if: steps.dependency-graph.outputs.available == 'true'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+      - name: Confirm repository-wide fallback gate
+        if: steps.dependency-graph.outputs.available != 'true'
+        run: echo 'Dependency Review service unavailable; Trivy remains a required independent job in this workflow.'
