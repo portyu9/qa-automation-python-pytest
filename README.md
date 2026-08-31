@@ -31,7 +31,7 @@ A layered Python quality-engineering framework for deterministic **unit, API, co
 | Native pytest surface | Parametrization, fixtures, marks, warnings/exceptions, mocking, asyncio, focused selection | Normal pytest collection | Native node IDs + pytest reports |
 | Browser CI | Critical Chrome workflow behavior | Selenium + headless Chrome + local fixture | JUnit, manifest, bounded diagnostics |
 | Extended browser | Engine compatibility | Chrome + Firefox | Per-browser JUnit + summaries |
-| Security | Dependency and repository-configuration risk | Trivy filesystem scan | JSON findings + Markdown summary |
+| Security | Python SAST, dependency/configuration/secret risk, and PR dependency-change risk | CodeQL + Trivy + Dependency Review when GitHub Dependency graph is available | CodeQL result, Trivy JSON/summary, dependency-review status |
 | Optional DAST | Active behavior of the controlled service | OWASP ZAP, loopback only | Alert classification |
 | Performance | Workload policy plus explicit latency/throughput experiments | Locust; bounded loopback script-health smoke in extended CI | Native Locust metrics |
 | Documentation | README/workflow/governance consistency | Repository-local validator | Actions status |
@@ -86,7 +86,7 @@ The architecture is intentionally asymmetric: tests own **intent**, fixtures own
 | Synchronization | Explicit conditions describe readiness; implicit waits and fixed sleeps are not readiness models. |
 | Parallelism | Workers do not race the controller-owned run manifest or shared mutable state. |
 | Evidence | Automatic diagnostics are bounded, failure-oriented, and avoid credentials/storage/page-source collection. |
-| Security | Static repository scanning and active DAST are separate controls with different authorization models. |
+| Security | SAST, repository/dependency scanning, dependency-diff review, and active DAST are separate controls with different evidence and authorization models. |
 | CI integrity | Native command exit codes remain authoritative; reporting cannot turn failure into success. |
 
 ## Boundary decision guide
@@ -251,8 +251,10 @@ SQLAlchemy tests use deterministic SQLite state while retaining explicit session
 
 - `ci.yml` — source quality, xdist ownership contract, Python compatibility, interpreter-specific `--require-hashes` installs, fast layers including executable OpenAPI contracts, deterministic Chrome.
 - `extended.yml` — Python 3.12 hash-locked Chrome/Firefox compatibility plus a bounded loopback Locust script-health smoke on relevant changes, `main`, schedule, and manual dispatch.
-- `security.yml` — independent Trivy repository gate.
+- `security.yml` — CodeQL Python SAST, independent Trivy HIGH/CRITICAL filesystem/dependency/configuration/secret scanning, and pull-request Dependency Review when GitHub Dependency graph is available.
 - `docs.yml` — local-link/badge/Mermaid/governance validation without external-site uptime coupling.
+
+When GitHub Dependency graph is unavailable, the PR security workflow records that limitation and the independent Trivy job remains a required repository-wide fallback gate. Trivy is not presented as equivalent to Dependency Review: enable Dependency graph in repository security settings to restore change-aware dependency-diff analysis.
 
 `src/run_manifest.py` gives run-level evidence one writer under xdist: workers emit pytest events, the controller serializes the manifest. Browser evidence uses the same run identity.
 
@@ -261,13 +263,14 @@ SQLAlchemy tests use deterministic SQLite state while retaining explicit session
 Dependabot is configured for **pip** and **GitHub Actions**. `requirements.txt` declares bounded direct compatibility, while `requirements-lock/python-3.11.txt`, `python-3.12.txt`, and `python-3.13.txt` are generated resolution artifacts for the supported CI interpreters. Each lock pins the complete resolved graph and package hashes; production CI installs with `pip --require-hashes`.
 
 - version updates run weekly on Monday at 09:00 America/New_York;
-- routine minor/patch updates are grouped to reduce review noise;
+- scheduled pip version updates are limited to direct dependencies declared by the project; resolver-owned transitive packages move when a compatible direct dependency resolution requires them rather than being upgraded independently;
+- routine direct minor/patch updates are grouped to reduce review noise;
 - major upgrades remain isolated so compatibility changes stay attributable;
 - GitHub Actions are maintained as their own dependency surface;
 - dependency changes require intentional lock regeneration for all three supported Python minors and strict-hash installation validation;
 - dependency PRs are not assumed safe because they are automated—CI, security, docs, release notes, resolved-graph review, and behavioral impact still decide mergeability.
 
-The compatibility manifest and generated locks have different jobs: `requirements.txt` expresses allowed direct ranges; the committed locks make CI resolution reproducible. Dependabot version updates complement, rather than replace, vulnerability scanning. Repository security policy and Trivy remain independent controls.
+The compatibility manifest and generated locks have different jobs: `requirements.txt` expresses allowed direct ranges; the committed locks make CI resolution reproducible. Scheduled version updates target direct dependencies, while vulnerability handling remains an independent security concern for the complete resolved graph. Dependabot complements, rather than replaces, CodeQL, Dependency Review, and Trivy.
 
 ## Failure triage
 
