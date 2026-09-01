@@ -1,0 +1,69 @@
+name: normalize-versionless-docs
+on:
+  push:
+    branches: [chore/versionless-docs]
+permissions:
+  contents: write
+jobs:
+  normalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Normalize Python documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          files=[Path('README.md'),*sorted(Path('docs').rglob('*.md'))]
+          exact={
+            'Python 3.11 / 3.12 / 3.13 / 3.14':'supported Python runtimes',
+            'Python 3.11, 3.12, 3.13, and 3.14':'supported Python runtimes',
+            'Python 3.11–3.14':'supported Python runtimes',
+            'Python 3.11-3.14':'supported Python runtimes',
+            'Python 3.14 is the primary runtime':'The repository-designated Python runtime is the primary runtime',
+            'Python 3.14 primary':'primary Python runtime',
+            'Python 3.14 browser':'primary Python browser lane',
+            'Python 3.14':'primary Python runtime',
+            'Python 3.13':'supported Python runtime',
+            'Python 3.12':'supported Python runtime',
+            'Python 3.11':'minimum supported Python runtime',
+            'requirements-lock/python-3.14.txt':'requirements-lock/<matching-runtime>.txt',
+            'requirements-lock/python-3.13.txt':'requirements-lock/<matching-runtime>.txt',
+            'requirements-lock/python-3.12.txt':'requirements-lock/<matching-runtime>.txt',
+            'requirements-lock/python-3.11.txt':'requirements-lock/<matching-runtime>.txt',
+          }
+          techs=['pytest','Requests','Selenium','SQLAlchemy','Locust','OWASP ZAP','OpenAPI','Flask','pip','Chrome','Chromium','Firefox']
+          for path in files:
+            text=path.read_text(encoding='utf-8')
+            for old,new in exact.items(): text=text.replace(old,new)
+            text=re.sub(r'\bPython\s+v?\d+(?:\.\d+)*(?:\s*(?:/|,|and|or|through|–|-)\s*(?:Python\s+)?v?\d+(?:\.\d+)*)+', 'supported Python runtimes', text)
+            text=re.sub(r'\bPython\s+v?\d+(?:\.\d+)*\b','Python',text)
+            for tech in techs:
+              text=re.sub(rf'(?i)\b{re.escape(tech)}\s+v?\d+(?:\.\d+)*(?:\.x)?\b',tech,text)
+            text=re.sub(r'(?i)requirements-lock/python-\d+(?:\.\d+)*\.txt','requirements-lock/<matching-runtime>.txt',text)
+            path.write_text(text,encoding='utf-8')
+          PY
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          names=r'(?:Python|pytest|Requests|Selenium|SQLAlchemy|Locust|OWASP ZAP|OpenAPI|Flask|pip|Chrome|Chromium|Firefox)'
+          pats=[re.compile(rf'(?i)\b{names}\s+v?\d+(?:\.\d+)*(?:\.x)?'),re.compile(r'(?i)requirements-lock/python-\d')]
+          bad=[]
+          for p in [Path('README.md'),*sorted(Path('docs').rglob('*.md'))]:
+            for n,l in enumerate(p.read_text(encoding='utf-8').splitlines(),1):
+              if any(x.search(l) for x in pats): bad.append(f'{p}:{n}: {l}')
+          if bad: print('\n'.join(bad)); raise SystemExit(1)
+          PY
+          python3 .github/scripts/validate_readme.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/doc-version-normalize.yml
+          git add -A
+          git diff --cached --check
+          git commit -m "docs: make technology documentation versionless"
+          git push origin HEAD
