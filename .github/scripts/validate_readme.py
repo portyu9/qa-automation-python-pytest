@@ -21,6 +21,10 @@ SECURITY_BADGE_RE = re.compile(
     r"https://img\.shields\.io/badge/Security-Policy-([0-9A-Fa-f]{6})"
 )
 MERMAID_RE = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL)
+REPOSITORY_MAP_RE = re.compile(
+    r"## Repository map\s*\n\s*```text\s*\n(.*?)```", re.DOTALL
+)
+TREE_ENTRY_RE = re.compile(r"^[│\s]*(?:├──|└──)\s*(.+?)\s*$")
 MERMAID_ROOTS = (
     "flowchart",
     "graph",
@@ -36,6 +40,11 @@ MERMAID_ROOTS = (
     "quadrantChart",
     "xychart",
 )
+STABLE_GATES = {
+    "ci-gate": ROOT / ".github" / "workflows" / "ci.yml",
+    "extended-gate": ROOT / ".github" / "workflows" / "extended.yml",
+    "security-gate": ROOT / ".github" / "workflows" / "security.yml",
+}
 
 
 def fail(message: str, errors: list[str]) -> None:
@@ -104,6 +113,39 @@ def validate_mermaid(text: str, errors: list[str]) -> None:
             )
 
 
+def validate_repository_map(text: str, errors: list[str]) -> None:
+    match = REPOSITORY_MAP_RE.search(text)
+    if not match:
+        fail("README repository map is missing its text code block", errors)
+        return
+
+    entries = 0
+    for line in match.group(1).splitlines():
+        stripped = line.strip()
+        if not stripped or stripped == ".":
+            continue
+        tree_match = TREE_ENTRY_RE.match(line)
+        if not tree_match:
+            fail(f"README repository map contains an unrecognized tree line: {line!r}", errors)
+            continue
+        entry = tree_match.group(1)
+        entries += 1
+        if not entry.endswith("/"):
+            fail(f"README repository map must contain directories only: {entry}", errors)
+
+    if entries == 0:
+        fail("README repository map contains no directory entries", errors)
+
+
+def validate_stable_gates(text: str, errors: list[str]) -> None:
+    for gate, workflow in STABLE_GATES.items():
+        workflow_text = workflow.read_text(encoding="utf-8") if workflow.is_file() else ""
+        if not re.search(rf"^\s{{2}}{re.escape(gate)}:\s*$", workflow_text, re.MULTILINE):
+            fail(f"workflow does not define stable aggregate job `{gate}`", errors)
+        if f"`{gate}`" not in text:
+            fail(f"README must document stable aggregate job `{gate}`", errors)
+
+
 def main() -> int:
     errors: list[str] = []
 
@@ -120,6 +162,8 @@ def main() -> int:
     validate_workflow_badges(text, errors)
     validate_badge_palette(text, errors)
     validate_mermaid(text, errors)
+    validate_repository_map(text, errors)
+    validate_stable_gates(text, errors)
 
     if errors:
         print("README contract failed:")
@@ -127,7 +171,9 @@ def main() -> int:
             print(f"- {error}")
         return 1
 
-    print("README contract: ok")
+    print(
+        "README contract: local links, badges, Mermaid, directory-only map, and stable gates are consistent"
+    )
     return 0
 
 
