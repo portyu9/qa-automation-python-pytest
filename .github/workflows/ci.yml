@@ -158,12 +158,13 @@ jobs:
           TEST_HEADLESS: "true"
           TEST_REPORT_DIR: reports/browser
         run: pytest tests/e2e --junitxml=reports/browser/junit.xml
-      - name: Validate meaningful browser evidence
+      - name: Validate governed Selenium scenario evidence
         run: >-
           python .github/scripts/validate_test_evidence.py browser
           reports/browser/junit.xml
           reports/browser/run-manifest.json
           1
+          tests/e2e/test_example.py::test_local_fixture_navigation
       - name: Publish browser observability summary
         if: always()
         env:
@@ -194,7 +195,7 @@ jobs:
             echo "- Run ID: \`${TEST_RUN_ID}\`"
             echo "- Job status: \`${JOB_STATUS}\`"
             echo '- Dependencies: Python 3.14 hash-locked graph (`--require-hashes`) + `pip check`'
-            echo '- Evidence: >=1 executed browser test, zero failures/errors, reconciled JUnit + run manifest + redacted browser failure diagnostics'
+            echo '- Evidence: governed local-fixture navigation scenario must execute and pass; JUnit + controller-owned run manifest reconcile; browser failure diagnostics remain redacted'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload browser evidence
         if: always()
