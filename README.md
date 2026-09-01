@@ -136,7 +136,7 @@ A requirement belongs at the **lowest layer that can conclusively prove it**.
 
 ## Quick start
 
-supported Python runtimes are exercised by CI. primary Python runtime is the primary quality/browser/performance runtime; the earlier supported minors remain explicit fast-suite compatibility lines. `requirements.txt` is the human-maintained direct compatibility input; CI installs a generated, interpreter-specific hash lock. Choose the lock matching the active Python minor version.
+CI qualifies every supported Python runtime. One runtime is designated the primary quality, browser, and performance line; the remaining supported runtimes are explicit fast-suite compatibility lines. `requirements.txt` is the human-maintained direct compatibility input, while CI installs a generated interpreter-specific hash lock. Choose the lock matching the active Python runtime.
 
 ```bash
 python -m venv .venv
@@ -145,7 +145,7 @@ python -m pip install --require-hashes -r requirements-lock/<matching-runtime>.t
 pytest --ignore=tests/e2e --ignore=tests/performance --ignore=tests/security
 ```
 
-For minimum supported Python runtime, 3.12, or 3.13, use the corresponding file in `requirements-lock/`. Use `pip install -r requirements.txt` only when intentionally resolving dependency changes and regenerating all supported-interpreter locks; it is not the CI installation path.
+For any supported Python runtime, use the corresponding file in `requirements-lock/`. Use `pip install -r requirements.txt` only when intentionally resolving dependency changes and regenerating all supported-interpreter locks; it is not the CI installation path.
 
 Run browser compatibility explicitly:
 
@@ -258,9 +258,25 @@ When GitHub Dependency graph is unavailable, the PR security workflow records th
 
 `src/run_manifest.py` gives run-level evidence one writer under xdist: workers emit pytest events, the controller serializes the manifest. Browser evidence uses the same run identity.
 
+## Confidence boundaries
+
+A green signal is evidence about a defined risk boundary, not a universal claim about system quality.
+
+| Signal | Confidence gained | Deliberate limit |
+| --- | --- | --- |
+| Unit/framework contracts | Pure policy, lifecycle, selection, and failure semantics behave deterministically | Does not prove HTTP, database-engine, or browser integration |
+| API + OpenAPI contract | Repository-owned provider behavior satisfies HTTP semantics and the committed structural schema | Structural compatibility does not prove every business invariant or external-provider behavior |
+| SQLite persistence | Repository/session ownership, transaction behavior, and deterministic data semantics are executable | Does not prove production database engine, topology, locking, replication, or migration behavior |
+| Selenium browser gates | Covered user flows behave in the explicitly qualified browser engines against the controlled fixture | Does not imply universal browser, device, assistive-technology, or deployed-environment coverage |
+| Locust loopback smoke | Workload code starts, targets the authorized fixture, emits metrics, and respects execution policy | It is not a capacity, saturation, scalability, or service-level result |
+| Authorized ZAP checks | The configured active-scan surface is executable against the controlled target | It is not equivalent to a penetration test or proof of vulnerability absence |
+| CodeQL / Trivy / dependency review | Independent scanners evaluate their governed code, dependency, configuration, secret, and change-diff scopes | Scanner success is bounded by rule coverage, vulnerability data, repository visibility, and the evidence actually inspected |
+
+The framework therefore treats **confidence as compositional**: choose the lowest-cost boundary that can prove the requirement, then add broader integration only when the requirement depends on broader semantics.
+
 ## Dependency maintenance
 
-Dependabot is configured for **pip** and **GitHub Actions**. `requirements.txt` declares bounded direct compatibility, while `requirements-lock/<matching-runtime>.txt`, `python-3.12.txt`, `python-3.13.txt`, and `python-3.14.txt` are generated resolution artifacts for the supported CI interpreters. Each lock pins the complete resolved graph and package hashes; production CI installs with `pip --require-hashes` and verifies the installed graph with `pip check`.
+Dependabot is configured for **pip** and **GitHub Actions**. `requirements.txt` declares bounded direct compatibility, while `requirements-lock/<matching-runtime>.txt` represents the generated per-interpreter resolution artifacts for supported CI runtimes. Each lock pins the complete resolved graph and package hashes; production CI installs with `pip --require-hashes` and verifies the installed graph with `pip check`.
 
 - version updates run weekly on Monday at 09:00 America/New_York;
 - scheduled pip version updates are limited to direct dependencies declared by the project; resolver-owned transitive packages move when a compatible direct dependency resolution requires them rather than being upgraded independently;
