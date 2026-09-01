@@ -4,22 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    paths:
-      - "conftest.py"
-      - "requirements.txt"
-      - "requirements-lock/**"
-      - "pyproject.toml"
-      - "contract/**"
-      - "performance/**"
-      - "src/browser.py"
-      - "src/config.py"
-      - "src/pages/**"
-      - "mock/**"
-      - "tests/contract/**"
-      - "tests/e2e/**"
-      - "tests/performance/**"
-      - ".github/scripts/**"
-      - ".github/workflows/extended.yml"
   schedule:
     - cron: "41 7 * * 3"
   workflow_dispatch:
@@ -28,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: python-extended-${{ github.ref }}
+  group: python-extended-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -67,30 +51,11 @@ jobs:
           pytest tests/e2e
           --junitxml=reports/${{ matrix.browser }}/junit.xml
       - name: Validate meaningful browser evidence
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          import xml.etree.ElementTree as ET
-          from pathlib import Path
-
-          browser = os.environ["TEST_BROWSER"]
-          report_dir = Path(os.environ["TEST_REPORT_DIR"])
-          junit = report_dir / "junit.xml"
-          manifest = report_dir / "run-manifest.json"
-          if not junit.is_file() or junit.stat().st_size == 0:
-              raise SystemExit(f"missing {browser} JUnit evidence")
-          executed = len(ET.parse(junit).getroot().findall(".//testcase"))
-          if executed <= 0:
-              raise SystemExit(f"{browser} JUnit evidence contains zero executed tests")
-          payload = json.loads(manifest.read_text(encoding="utf-8"))
-          if payload["summary"]["total"] <= 0:
-              raise SystemExit(f"{browser} run manifest contains zero outcomes")
-          print(
-              f"validated Python 3.14 / {browser} evidence: "
-              f"tests={executed}, outcomes={payload['summary']['total']}"
-          )
-          PY
+        run: >-
+          python .github/scripts/validate_test_evidence.py browser
+          reports/${{ matrix.browser }}/junit.xml
+          reports/${{ matrix.browser }}/run-manifest.json
+          1
       - name: Publish browser observability summary
         if: always()
         run: |
@@ -103,7 +68,7 @@ jobs:
             echo '- Python: `3.14`'
             echo '- Dependencies: hash-locked graph (`--require-hashes`) + `pip check`'
             echo "- Job status: \`${{ job.status }}\`"
-            echo '- Evidence: validated JUnit + controller-owned run manifest + bounded failure diagnostics'
+            echo '- Evidence: >=1 executed test, zero failures/errors, reconciled JUnit + controller-owned run manifest + bounded failure diagnostics'
           } | tee "reports/${{ matrix.browser }}/summary.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload cross-browser evidence
         if: always()
@@ -186,20 +151,12 @@ jobs:
             --csv reports/performance/locust \
             --exit-code-on-error 1
       - name: Validate Locust evidence
-        run: |
-          python - <<'PY'
-          import csv
-          from pathlib import Path
-
-          stats = Path("reports/performance/locust_stats.csv")
-          if not stats.is_file() or stats.stat().st_size == 0:
-              raise SystemExit("Locust did not produce stats evidence")
-          with stats.open(newline="", encoding="utf-8") as handle:
-              rows = list(csv.DictReader(handle))
-          if not rows:
-              raise SystemExit("Locust stats evidence contains no measured request rows")
-          print(f"validated Locust evidence rows={len(rows)}")
-          PY
+        run: >-
+          python .github/scripts/validate_test_evidence.py locust
+          reports/performance/locust_stats.csv
+          reports/performance/locust_failures.csv
+          reports/performance/locust_exceptions.csv
+          2
       - name: Publish performance summary
         if: always()
         run: |
@@ -210,7 +167,7 @@ jobs:
             echo '- Target: repository-owned loopback fixture only'
             echo '- Workload: 1 user, spawn rate 1/s, 3 seconds'
             echo "- Job status: \`${{ job.status }}\`"
-            echo '- Evidence: Locust CSV metrics + fixture lifecycle log'
+            echo '- Evidence: >=2 requests, zero aggregate failures, zero Locust failure/exception rows, native CSV metrics + fixture lifecycle log'
             echo '- Interpretation: script/target-policy health only; this is not a capacity or SLO result'
           } | tee reports/performance/summary.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload performance evidence
@@ -221,3 +178,23 @@ jobs:
           path: reports/performance/
           if-no-files-found: error
           retention-days: 14
+
+  extended-gate:
+    name: extended-gate
+    if: always()
+    needs: [cross-browser, performance-smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require cross-browser and bounded performance contracts
+        shell: bash
+        env:
+          CROSS_BROWSER_RESULT: ${{ needs.cross-browser.result }}
+          PERFORMANCE_RESULT: ${{ needs.performance-smoke.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$CROSS_BROWSER_RESULT" != "success" || "$PERFORMANCE_RESULT" != "success" ]]; then
+            echo "cross_browser=$CROSS_BROWSER_RESULT performance_smoke=$PERFORMANCE_RESULT" >&2
+            exit 1
+          fi
+          echo "Cross-browser and bounded Locust contracts passed."
