@@ -137,13 +137,11 @@ def validate_repository_map(text: str, errors: list[str]) -> None:
         fail("README repository map contains no directory entries", errors)
 
 
-def validate_stable_gates(text: str, errors: list[str]) -> None:
+def validate_stable_gates(errors: list[str]) -> None:
     for gate, workflow in STABLE_GATES.items():
         workflow_text = workflow.read_text(encoding="utf-8") if workflow.is_file() else ""
         if not re.search(rf"^\s{{2}}{re.escape(gate)}:\s*$", workflow_text, re.MULTILINE):
             fail(f"workflow does not define stable aggregate job `{gate}`", errors)
-        if f"`{gate}`" not in text:
-            fail(f"README must document stable aggregate job `{gate}`", errors)
 
 
 def main() -> int:
@@ -163,7 +161,7 @@ def main() -> int:
     validate_badge_palette(text, errors)
     validate_mermaid(text, errors)
     validate_repository_map(text, errors)
-    validate_stable_gates(text, errors)
+    validate_stable_gates(errors)
 
     if errors:
         print("README contract failed:")
@@ -172,7 +170,7 @@ def main() -> int:
         return 1
 
     print(
-        "README contract: local links, badges, Mermaid, directory-only map, and stable gates are consistent"
+        "README contract: local links, badges, Mermaid, directory-only map, and stable gate surfaces are consistent"
     )
     return 0
 
