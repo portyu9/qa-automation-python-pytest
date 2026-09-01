@@ -7,6 +7,8 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+GOVERNED_BROWSER_NODEID = "tests/e2e/test_example.py::test_local_fixture_navigation"
+
 
 def fail(message: str) -> None:
     raise SystemExit(message)
@@ -102,7 +104,7 @@ def validate_browser(
     junit_raw: str,
     manifest_raw: str,
     minimum_raw: str,
-    expected_nodeid: str,
+    expected_nodeid: str = GOVERNED_BROWSER_NODEID,
 ) -> None:
     junit = require_file(junit_raw)
     manifest = require_file(manifest_raw)
@@ -184,7 +186,7 @@ def main() -> int:
     args = sys.argv[2:]
     if mode == "functional" and len(args) == 4:
         validate_functional(*args)
-    elif mode == "browser" and len(args) == 4:
+    elif mode == "browser" and len(args) in {3, 4}:
         validate_browser(*args)
     elif mode == "locust" and len(args) == 4:
         validate_locust(*args)
