@@ -29,8 +29,14 @@ def junit_counts(path: Path) -> tuple[int, int, int, int]:
     return tests, failures, errors, skipped
 
 
-def manifest_summary(path: Path) -> dict[str, int]:
+def manifest_payload(path: Path) -> dict[str, object]:
     payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        fail(f"run manifest must be an object: {path}")
+    return payload
+
+
+def manifest_summary(payload: dict[str, object], path: Path) -> dict[str, int]:
     summary = payload.get("summary")
     if not isinstance(summary, dict):
         fail(f"run manifest lacks summary object: {path}")
@@ -41,7 +47,7 @@ def manifest_summary(path: Path) -> dict[str, int]:
         fail(f"run manifest summary has invalid counters: {path}")
     if summary["total"] != summary["passed"] + summary["failed"] + summary["skipped"]:
         fail(f"run manifest counters do not reconcile: {path}")
-    return summary
+    return {key: int(summary[key]) for key in required}
 
 
 def validate_functional(junit_raw: str, coverage_raw: str, manifest_raw: str, minimum_raw: str) -> None:
@@ -59,7 +65,8 @@ def validate_functional(junit_raw: str, coverage_raw: str, manifest_raw: str, mi
     if failures or errors:
         fail(f"functional JUnit contains failures={failures}, errors={errors}")
 
-    summary = manifest_summary(manifest)
+    payload = manifest_payload(manifest)
+    summary = manifest_summary(payload, manifest)
     if summary["total"] != tests:
         fail(f"manifest/JUnit totals differ: manifest={summary['total']} junit={tests}")
     if summary["failed"] != failures:
@@ -91,12 +98,19 @@ def validate_functional(junit_raw: str, coverage_raw: str, manifest_raw: str, mi
     )
 
 
-def validate_browser(junit_raw: str, manifest_raw: str, minimum_raw: str) -> None:
+def validate_browser(
+    junit_raw: str,
+    manifest_raw: str,
+    minimum_raw: str,
+    expected_nodeid: str,
+) -> None:
     junit = require_file(junit_raw)
     manifest = require_file(manifest_raw)
     minimum = int(minimum_raw)
     if minimum < 1:
         fail("browser minimum must be positive")
+    if not expected_nodeid.strip():
+        fail("browser expected nodeid must be non-empty")
 
     tests, failures, errors, skipped = junit_counts(junit)
     executed = tests - skipped
@@ -105,13 +119,33 @@ def validate_browser(junit_raw: str, manifest_raw: str, minimum_raw: str) -> Non
     if failures or errors:
         fail(f"browser JUnit contains failures={failures}, errors={errors}")
 
-    summary = manifest_summary(manifest)
+    payload = manifest_payload(manifest)
+    summary = manifest_summary(payload, manifest)
     if summary["total"] != tests:
         fail(f"browser manifest/JUnit totals differ: manifest={summary['total']} junit={tests}")
     if summary["failed"] != failures or summary["skipped"] != skipped:
         fail("browser manifest/JUnit outcome counters do not reconcile")
 
-    print(f"validated browser evidence: executed={executed}, skipped={skipped}, failures=0")
+    outcomes = payload.get("outcomes")
+    if not isinstance(outcomes, list):
+        fail("browser run manifest lacks outcomes array")
+    matches = [item for item in outcomes if isinstance(item, dict) and item.get("nodeid") == expected_nodeid]
+    if len(matches) != 1:
+        fail(
+            f"browser governed scenario evidence mismatch: expected exactly one {expected_nodeid!r}, "
+            f"found {len(matches)}"
+        )
+    governed = matches[0]
+    if governed.get("status") != "passed" or governed.get("phase") != "call":
+        fail(
+            "browser governed scenario did not complete as a passed call-phase test: "
+            f"status={governed.get('status')!r} phase={governed.get('phase')!r}"
+        )
+
+    print(
+        f"validated browser evidence: executed={executed}, skipped={skipped}, failures=0, "
+        f"governed={expected_nodeid}"
+    )
 
 
 def validate_locust(stats_raw: str, failures_raw: str, exceptions_raw: str, minimum_raw: str) -> None:
@@ -150,7 +184,7 @@ def main() -> int:
     args = sys.argv[2:]
     if mode == "functional" and len(args) == 4:
         validate_functional(*args)
-    elif mode == "browser" and len(args) == 3:
+    elif mode == "browser" and len(args) == 4:
         validate_browser(*args)
     elif mode == "locust" and len(args) == 4:
         validate_locust(*args)
