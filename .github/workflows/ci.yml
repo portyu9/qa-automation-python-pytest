@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: python-pytest-${{ github.workflow }}-${{ github.ref }}
+  group: python-pytest-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -39,8 +39,8 @@ jobs:
           python -m pip check
       - name: Lint Python
         run: ruff check .
-      - name: Compile Python sources and tests
-        run: python -m compileall -q src tests
+      - name: Compile Python sources, tests, and repository validators
+        run: python -m compileall -q src tests .github/scripts
       - name: Validate xdist run-manifest ownership
         env:
           TEST_REPORT_DIR: reports/xdist-contract
@@ -54,6 +54,7 @@ jobs:
           manifest_path = report_dir / "run-manifest.json"
           payload = json.loads(manifest_path.read_text(encoding="utf-8"))
           assert payload["summary"]["total"] > 0
+          assert payload["summary"]["failed"] == 0
           assert not list(report_dir.glob("*.tmp"))
           print(f"xdist manifest outcomes={payload['summary']['total']}")
           PY
@@ -88,38 +89,12 @@ jobs:
           --cov-report=xml:reports/coverage-${{ matrix.python }}.xml
           --cov-report=term-missing
       - name: Validate meaningful fast-test evidence
-        env:
-          PYTHON_VERSION: ${{ matrix.python }}
-        run: |
-          python - <<'PY'
-          import os
-          import xml.etree.ElementTree as ET
-          from pathlib import Path
-
-          version = os.environ["PYTHON_VERSION"]
-          junit = Path(f"reports/junit-{version}.xml")
-          coverage = Path(f"reports/coverage-{version}.xml")
-          if not junit.is_file() or junit.stat().st_size == 0:
-              raise SystemExit(f"missing JUnit evidence: {junit}")
-          if not coverage.is_file() or coverage.stat().st_size == 0:
-              raise SystemExit(f"missing coverage evidence: {coverage}")
-
-          junit_root = ET.parse(junit).getroot()
-          executed = len(junit_root.findall(".//testcase"))
-          if executed <= 0:
-              raise SystemExit("JUnit evidence contains zero executed tests")
-
-          coverage_root = ET.parse(coverage).getroot()
-          lines_valid = int(coverage_root.attrib.get("lines-valid", "0"))
-          lines_covered = int(coverage_root.attrib.get("lines-covered", "0"))
-          if lines_valid <= 0 or lines_covered <= 0:
-              raise SystemExit("coverage evidence contains no measured source lines")
-
-          print(
-              f"validated Python {version} evidence: "
-              f"tests={executed}, covered_lines={lines_covered}/{lines_valid}"
-          )
-          PY
+        run: >-
+          python .github/scripts/validate_test_evidence.py functional
+          reports/junit-${{ matrix.python }}.xml
+          reports/coverage-${{ matrix.python }}.xml
+          reports/run-manifest.json
+          50
       - name: Publish functional observability summary
         if: always()
         env:
@@ -151,7 +126,7 @@ jobs:
             echo "- Run ID: \`${TEST_RUN_ID}\`"
             echo "- Job status: \`${JOB_STATUS}\`"
             echo '- Dependencies: interpreter-specific hash-locked graph (`--require-hashes`) + `pip check`'
-            echo '- Evidence: validated JUnit + coverage XML + run manifest + CI observability envelope'
+            echo '- Evidence: >=50 executed tests, zero failures/errors, reconciled JUnit/run manifest, coverage XML >=70% line floor + measured branch counters, CI observability envelope'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload functional evidence
         if: always()
@@ -184,23 +159,11 @@ jobs:
           TEST_REPORT_DIR: reports/browser
         run: pytest tests/e2e --junitxml=reports/browser/junit.xml
       - name: Validate meaningful browser evidence
-        run: |
-          python - <<'PY'
-          import json
-          import xml.etree.ElementTree as ET
-          from pathlib import Path
-
-          junit = Path("reports/browser/junit.xml")
-          manifest = Path("reports/browser/run-manifest.json")
-          if not junit.is_file() or junit.stat().st_size == 0:
-              raise SystemExit("missing browser JUnit evidence")
-          if len(ET.parse(junit).getroot().findall(".//testcase")) <= 0:
-              raise SystemExit("browser JUnit evidence contains zero executed tests")
-          payload = json.loads(manifest.read_text(encoding="utf-8"))
-          if payload["summary"]["total"] <= 0:
-              raise SystemExit("browser run manifest contains zero outcomes")
-          print(f"validated browser evidence outcomes={payload['summary']['total']}")
-          PY
+        run: >-
+          python .github/scripts/validate_test_evidence.py browser
+          reports/browser/junit.xml
+          reports/browser/run-manifest.json
+          1
       - name: Publish browser observability summary
         if: always()
         env:
@@ -231,7 +194,7 @@ jobs:
             echo "- Run ID: \`${TEST_RUN_ID}\`"
             echo "- Job status: \`${JOB_STATUS}\`"
             echo '- Dependencies: Python 3.14 hash-locked graph (`--require-hashes`) + `pip check`'
-            echo '- Evidence: validated JUnit + run manifest + redacted browser failure diagnostics'
+            echo '- Evidence: >=1 executed browser test, zero failures/errors, reconciled JUnit + run manifest + redacted browser failure diagnostics'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload browser evidence
         if: always()
@@ -241,3 +204,24 @@ jobs:
           path: reports/browser/
           if-no-files-found: error
           retention-days: 14
+
+  ci-gate:
+    name: ci-gate
+    if: always()
+    needs: [quality, functional, browser]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require quality, interpreter matrix, and browser gate
+        shell: bash
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          FUNCTIONAL_RESULT: ${{ needs.functional.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$QUALITY_RESULT" != "success" || "$FUNCTIONAL_RESULT" != "success" || "$BROWSER_RESULT" != "success" ]]; then
+            echo "quality=$QUALITY_RESULT functional=$FUNCTIONAL_RESULT browser=$BROWSER_RESULT" >&2
+            exit 1
+          fi
+          echo "Python quality, interpreter matrix, and deterministic browser gate passed."
