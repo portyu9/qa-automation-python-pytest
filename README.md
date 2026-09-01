@@ -27,7 +27,7 @@ A layered Python quality-engineering framework for deterministic **unit, API, co
 
 | Validation plane | What it proves | Default execution | Primary evidence |
 | --- | --- | --- | --- |
-| Fast CI | Unit, API, executable OpenAPI contract, persistence, framework invariants | Python 3.11 / 3.12 / 3.13 / 3.14 | Validated JUnit, coverage XML, run manifest |
+| Fast CI | Unit, API, executable OpenAPI contract, persistence, framework invariants | supported Python runtimes | Validated JUnit, coverage XML, run manifest |
 | Native pytest surface | Parametrization, fixtures, marks, warnings/exceptions, mocking, asyncio, focused selection | Normal pytest collection | Native node IDs + pytest reports |
 | Browser CI | Critical Chrome workflow behavior | Selenium + headless Chrome + local fixture | JUnit, manifest, bounded diagnostics |
 | Extended browser | Engine compatibility | Chrome + Firefox | Per-browser JUnit + summaries |
@@ -136,16 +136,16 @@ A requirement belongs at the **lowest layer that can conclusively prove it**.
 
 ## Quick start
 
-Python 3.11, 3.12, 3.13, and 3.14 are exercised by CI. Python 3.14 is the primary quality/browser/performance runtime; the earlier supported minors remain explicit fast-suite compatibility lines. `requirements.txt` is the human-maintained direct compatibility input; CI installs a generated, interpreter-specific hash lock. Choose the lock matching the active Python minor version.
+supported Python runtimes are exercised by CI. primary Python runtime is the primary quality/browser/performance runtime; the earlier supported minors remain explicit fast-suite compatibility lines. `requirements.txt` is the human-maintained direct compatibility input; CI installs a generated, interpreter-specific hash lock. Choose the lock matching the active Python minor version.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate          # Windows PowerShell: .venv\Scripts\Activate.ps1
-python -m pip install --require-hashes -r requirements-lock/python-3.14.txt
+python -m pip install --require-hashes -r requirements-lock/<matching-runtime>.txt
 pytest --ignore=tests/e2e --ignore=tests/performance --ignore=tests/security
 ```
 
-For Python 3.11, 3.12, or 3.13, use the corresponding file in `requirements-lock/`. Use `pip install -r requirements.txt` only when intentionally resolving dependency changes and regenerating all supported-interpreter locks; it is not the CI installation path.
+For minimum supported Python runtime, 3.12, or 3.13, use the corresponding file in `requirements-lock/`. Use `pip install -r requirements.txt` only when intentionally resolving dependency changes and regenerating all supported-interpreter locks; it is not the CI installation path.
 
 Run browser compatibility explicitly:
 
@@ -249,8 +249,8 @@ SQLAlchemy tests use deterministic SQLite state while retaining explicit session
 
 ## CI and evidence
 
-- `ci.yml` — Python 3.14 source quality and xdist ownership contract; Python 3.11–3.14 interpreter-specific `--require-hashes` fast gates including executable OpenAPI contracts; non-empty JUnit/coverage validation; deterministic Chrome on Python 3.14.
-- `extended.yml` — Python 3.14 hash-locked Chrome/Firefox compatibility plus a bounded loopback Locust script-health smoke with retained CSV metrics on relevant changes, `main`, schedule, and manual dispatch.
+- `ci.yml` — primary Python runtime source quality and xdist ownership contract; supported Python runtimes interpreter-specific `--require-hashes` fast gates including executable OpenAPI contracts; non-empty JUnit/coverage validation; deterministic Chrome on primary Python runtime.
+- `extended.yml` — primary Python runtime hash-locked Chrome/Firefox compatibility plus a bounded loopback Locust script-health smoke with retained CSV metrics on relevant changes, `main`, schedule, and manual dispatch.
 - `security.yml` — CodeQL Python SAST, independent Trivy HIGH/CRITICAL filesystem/dependency/configuration/secret scanning, and pull-request Dependency Review when GitHub Dependency graph is available.
 - `docs.yml` — local-link/badge/Mermaid/governance validation without external-site uptime coupling.
 
@@ -260,7 +260,7 @@ When GitHub Dependency graph is unavailable, the PR security workflow records th
 
 ## Dependency maintenance
 
-Dependabot is configured for **pip** and **GitHub Actions**. `requirements.txt` declares bounded direct compatibility, while `requirements-lock/python-3.11.txt`, `python-3.12.txt`, `python-3.13.txt`, and `python-3.14.txt` are generated resolution artifacts for the supported CI interpreters. Each lock pins the complete resolved graph and package hashes; production CI installs with `pip --require-hashes` and verifies the installed graph with `pip check`.
+Dependabot is configured for **pip** and **GitHub Actions**. `requirements.txt` declares bounded direct compatibility, while `requirements-lock/<matching-runtime>.txt`, `python-3.12.txt`, `python-3.13.txt`, and `python-3.14.txt` are generated resolution artifacts for the supported CI interpreters. Each lock pins the complete resolved graph and package hashes; production CI installs with `pip --require-hashes` and verifies the installed graph with `pip check`.
 
 - version updates run weekly on Monday at 09:00 America/New_York;
 - scheduled pip version updates are limited to direct dependencies declared by the project; resolver-owned transitive packages move when a compatible direct dependency resolution requires them rather than being upgraded independently;
