@@ -1,4 +1,4 @@
-"""Validate repository README contracts without third-party dependencies."""
+"""Validate repository README and workflow contracts without third-party dependencies."""
 
 from __future__ import annotations
 
@@ -142,6 +142,60 @@ def validate_stable_gates(errors: list[str]) -> None:
         workflow_text = workflow.read_text(encoding="utf-8") if workflow.is_file() else ""
         if not re.search(rf"^\s{{2}}{re.escape(gate)}:\s*$", workflow_text, re.MULTILINE):
             fail(f"workflow does not define stable aggregate job `{gate}`", errors)
+        if "pull_request:" not in workflow_text:
+            fail(f"workflow for `{gate}` must run on pull requests", errors)
+
+
+def require_tokens(path: Path, tokens: tuple[str, ...], errors: list[str]) -> None:
+    if not path.is_file():
+        fail(f"required workflow surface is missing: {path.relative_to(ROOT)}", errors)
+        return
+    content = path.read_text(encoding="utf-8")
+    for token in tokens:
+        if token not in content:
+            fail(f"{path.relative_to(ROOT)} is missing required contract token: {token}", errors)
+
+
+def validate_executable_contracts(errors: list[str]) -> None:
+    ci = ROOT / ".github" / "workflows" / "ci.yml"
+    security = ROOT / ".github" / "workflows" / "security.yml"
+    docs = ROOT / ".github" / "workflows" / "docs.yml"
+    evidence_validator = ROOT / ".github" / "scripts" / "validate_test_evidence.py"
+
+    require_tokens(
+        ci,
+        (
+            "tests/e2e/test_example.py::test_local_fixture_navigation",
+            "python .github/scripts/validate_test_evidence.py browser",
+        ),
+        errors,
+    )
+    require_tokens(
+        evidence_validator,
+        (
+            'GOVERNED_BROWSER_NODEID = "tests/e2e/test_example.py::test_local_fixture_navigation"',
+            "browser governed scenario evidence mismatch",
+        ),
+        errors,
+    )
+    require_tokens(
+        security,
+        (
+            "supply-chain-policy:",
+            "python .github/scripts/validate_workflow_pins.py",
+            "python .github/scripts/validate_dependency_locks.py",
+            "for version in 3.11 3.12 3.13 3.14; do",
+            'cp "requirements-lock/python-${version}.txt" "$target/requirements.txt"',
+            "python .github/scripts/validate_security_evidence.py \"$report\"",
+            "needs: [supply-chain-policy, codeql, trivy, dependency-review]",
+        ),
+        errors,
+    )
+    require_tokens(
+        docs,
+        ("python .github/scripts/test_security_evidence.py",),
+        errors,
+    )
 
 
 def main() -> int:
@@ -162,15 +216,16 @@ def main() -> int:
     validate_mermaid(text, errors)
     validate_repository_map(text, errors)
     validate_stable_gates(errors)
+    validate_executable_contracts(errors)
 
     if errors:
-        print("README contract failed:")
+        print("README/workflow contract failed:")
         for error in errors:
             print(f"- {error}")
         return 1
 
     print(
-        "README contract: local links, badges, Mermaid, directory-only map, and stable gate surfaces are consistent"
+        "README/workflow contract: local links, badges, Mermaid, directory-only map, stable gates, governed browser evidence, and attributed security inputs are consistent"
     )
     return 0
 
