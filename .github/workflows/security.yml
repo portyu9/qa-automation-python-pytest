@@ -16,8 +16,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  supply-chain-policy:
+    name: Supply-chain policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate immutable workflow dependencies and lock provenance
+        run: |
+          python .github/scripts/validate_workflow_pins.py
+          python .github/scripts/validate_dependency_locks.py
+
   codeql:
     name: CodeQL
+    needs: [supply-chain-policy]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       actions: read
@@ -38,14 +51,23 @@ jobs:
 
   trivy:
     name: Trivy
+    needs: [supply-chain-policy]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Prepare evidence directory
-        run: mkdir -p reports/security
-      - name: Scan repository security domains
+      - name: Prepare attributable pip lock inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports/security/trivy-input
+          for version in 3.11 3.12 3.13 3.14; do
+            target="reports/security/trivy-input/python-${version}"
+            mkdir -p "$target"
+            cp "requirements-lock/python-${version}.txt" "$target/requirements.txt"
+          done
+      - name: Scan hash-locked dependencies, configuration, and repository secrets
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.74.0
@@ -57,39 +79,44 @@ jobs:
           format: json
           output: reports/security/trivy.json
           exit-code: "1"
-      - name: Require and summarize Trivy evidence
+      - name: Require attributed Trivy evidence
         if: always()
         shell: bash
         run: |
           set -euo pipefail
           report=reports/security/trivy.json
           summary=reports/security/summary.md
-          if [[ ! -s "$report" ]]; then
-            printf '### Security gate\n\nTrivy did not produce JSON evidence.\n' | tee "$summary" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-          vulnerabilities=$(jq '[.Results[]? | .Vulnerabilities[]?] | length' "$report")
+          python .github/scripts/validate_security_evidence.py "$report"
+          vulnerabilities=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | length' "$report")
+          package_targets=$(jq '[.Results[]? | select(((.Target // "") | contains("trivy-input/python-")) and ((.Target // "") | endswith("requirements.txt")))] | length' "$report")
+          packages=$(jq '[.Results[]? | select(((.Target // "") | contains("trivy-input/python-")) and ((.Target // "") | endswith("requirements.txt"))) | .Packages[]? | (.Name + "@" + .Version)] | unique | length' "$report")
           misconfigurations=$(jq '[.Results[]? | .Misconfigurations[]?] | length' "$report")
           findings=$(jq '[.Results[]? | .Secrets[]?] | length' "$report")
           {
             echo '### Repository security gate'
             echo
+            echo "- Attributed Python lock targets: ${package_targets} / 4"
+            echo "- Unique Python packages represented: ${packages}"
             echo "- Fixed HIGH/CRITICAL vulnerabilities: ${vulnerabilities}"
             echo "- HIGH/CRITICAL misconfigurations: ${misconfigurations}"
             echo "- Gated credential-pattern findings: ${findings}"
             echo '- Scanner: Trivy v0.74.0'
+            echo '- Dependency evidence: all four committed interpreter-specific hash locks are copied to scanner-recognized requirements.txt inputs; the validator requires every direct dependency at its exact resolved version in each attributed package inventory'
           } | tee "$summary" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload security evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: trivy-security-evidence-${{ github.run_id }}
-          path: reports/security/
+          path: |
+            reports/security/trivy.json
+            reports/security/summary.md
           if-no-files-found: error
           retention-days: 14
 
   dependency-review:
     name: dependency-review
+    needs: [supply-chain-policy]
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
@@ -116,7 +143,7 @@ jobs:
             {
               echo '### Dependency Review fallback'
               echo
-              echo 'GitHub Dependency graph is unavailable. Independent Trivy remains required.'
+              echo 'GitHub Dependency graph is unavailable. Independent attributed Trivy scanning of every committed Python hash lock remains required.'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Review dependency changes
@@ -126,12 +153,12 @@ jobs:
           fail-on-severity: high
       - name: Confirm fallback scope
         if: steps.dependency-graph.outputs.available != 'true'
-        run: echo 'Dependency Review unavailable; repository-wide Trivy remains the independent dependency/configuration gate.'
+        run: echo 'Dependency Review unavailable; attributed Trivy hash-lock scanning remains the independent dependency/configuration gate.'
 
   security-gate:
     name: security-gate
     if: always()
-    needs: [codeql, trivy, dependency-review]
+    needs: [supply-chain-policy, codeql, trivy, dependency-review]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -141,11 +168,13 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
+          SUPPLY_CHAIN_RESULT: ${{ needs.supply-chain-policy.result }}
           CODEQL_RESULT: ${{ needs.codeql.result }}
           TRIVY_RESULT: ${{ needs.trivy.result }}
           DEPENDENCY_REVIEW_RESULT: ${{ needs.dependency-review.result }}
         run: |
           set -euo pipefail
+          [[ "$SUPPLY_CHAIN_RESULT" == "success" ]] || { echo "supply-chain-policy=$SUPPLY_CHAIN_RESULT"; exit 1; }
           [[ "$TRIVY_RESULT" == "success" ]] || { echo "trivy=$TRIVY_RESULT"; exit 1; }
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             [[ "$DEPENDENCY_REVIEW_RESULT" == "success" ]] || { echo "dependency-review=$DEPENDENCY_REVIEW_RESULT"; exit 1; }
