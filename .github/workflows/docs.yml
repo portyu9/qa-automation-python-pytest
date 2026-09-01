@@ -25,6 +25,8 @@ jobs:
           python-version: '3.13'
       - name: Validate dependency lock provenance
         run: python .github/scripts/validate_dependency_locks.py
+      - name: Validate security evidence policy
+        run: python .github/scripts/test_security_evidence.py
       - name: Validate README contracts
         run: python .github/scripts/validate_readme.py
       - name: Validate immutable workflow dependencies
