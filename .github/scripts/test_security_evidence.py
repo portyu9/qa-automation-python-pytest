@@ -77,7 +77,11 @@ def main() -> int:
     assert_fails(vulnerable, "HIGH/CRITICAL")
 
     mismatch = deepcopy(clean)
-    mismatch["Results"][0]["Packages"][0]["Version"] = "0.0.0"  # type: ignore[index]
+    packages = mismatch["Results"][0]["Packages"]  # type: ignore[index]
+    pytest_package = next(  # type: ignore[union-attr]
+        package for package in packages if package["Name"] == "pytest"
+    )
+    pytest_package["Version"] = "0.0.0"
     assert_fails(mismatch, "direct-package attribution mismatch")
 
     print("Python Trivy evidence validator self-test: ok")
