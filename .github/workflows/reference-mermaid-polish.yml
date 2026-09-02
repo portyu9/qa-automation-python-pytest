@@ -1,4 +1,4 @@
-name: Apply reference Mermaid polish
+name: reference-mermaid-polish
 
 on:
   push:
@@ -10,80 +10,80 @@ permissions:
 jobs:
   apply:
     runs-on: ubuntu-24.04
+    if: github.actor != 'github-actions[bot]'
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: docs/reference-quality-mermaid
       - name: Replace architecture diagram only
-        shell: bash
+        shell: python
         run: |
-          python - <<'PY'
           from pathlib import Path
           import re
 
           path = Path('README.md')
           text = path.read_text(encoding='utf-8')
           diagram = '''flowchart TD
-    CHANGE[Repository change] --> PYTEST[pytest orchestration]
-    PYTEST --> SELECT[Optional capability selector]
-    PYTEST --> CFG[TestSettings]
-    PYTEST --> UNIT[Unit / framework contracts]
-    PYTEST --> API[API / schema tests]
-    PYTEST --> DB[Persistence tests]
-    PYTEST --> UI[Selenium tests]
-    SELECT --> UNIT
-    API --> HTTP[HTTP client policy]
-    API --> FIX[Repository-local Flask fixture]
-    UI --> DRIVER[WebDriver factory]
-    UI --> PAGE[Page objects]
-    UI --> FIX
-    DB --> REPO[Repository layer]
-    REPO --> SQLITE[(SQLite)]
-    PYTEST --> MAN[Controller-owned run manifest]
-    UI --> DIAG[Failure-only diagnostics]
-    MAN --> REPORTS[Governed test evidence]
-    DIAG --> REPORTS
-    REPORTS --> CIG[CI / ci-gate]
+              CHANGE[Repository change] --> PYTEST[pytest orchestration]
+              PYTEST --> SELECT[Optional capability selector]
+              PYTEST --> CFG[TestSettings]
+              PYTEST --> UNIT[Unit / framework contracts]
+              PYTEST --> API[API / schema tests]
+              PYTEST --> DB[Persistence tests]
+              PYTEST --> UI[Selenium tests]
+              SELECT --> UNIT
+              API --> HTTP[HTTP client policy]
+              API --> FIX[Repository-local Flask fixture]
+              UI --> DRIVER[WebDriver factory]
+              UI --> PAGE[Page objects]
+              UI --> FIX
+              DB --> REPO[Repository layer]
+              REPO --> SQLITE[(SQLite)]
+              PYTEST --> MAN[Controller-owned run manifest]
+              UI --> DIAG[Failure-only diagnostics]
+              MAN --> REPORTS[Governed test evidence]
+              DIAG --> REPORTS
+              REPORTS --> CIG[CI / ci-gate]
 
-    CHANGE --> EXT[Cross-browser + bounded Locust]
-    EXT --> EG[Extended / extended-gate]
+              CHANGE --> EXT[Cross-browser + bounded Locust]
+              EXT --> EG[Extended / extended-gate]
 
-    CHANGE --> SEC[CodeQL · Trivy · Dependency Review]
-    SEC --> SG[Security / security-gate]
+              CHANGE --> SEC[CodeQL · Trivy · Dependency Review]
+              SEC --> SG[Security / security-gate]
 
-    CHANGE --> DOCS[README + workflow contracts]
-    DOCS --> DG[Docs / readme-contract]
+              CHANGE --> DOCS[README + workflow contracts]
+              DOCS --> DG[Docs / readme-contract]
 
-    CIG --> RESULT[Qualified repository change]
-    EG --> RESULT
-    SG --> RESULT
-    DG --> RESULT
+              CIG --> RESULT[Qualified repository change]
+              EG --> RESULT
+              SG --> RESULT
+              DG --> RESULT
 
-    classDef entry fill:#ddf4ff,stroke:#0969da,color:#24292f,stroke-width:1.5px;
-    classDef policy fill:#fbefff,stroke:#8250df,color:#24292f,stroke-width:1.5px;
-    classDef runtime fill:#fff8c5,stroke:#9a6700,color:#24292f,stroke-width:1.5px;
-    classDef evidence fill:#dafbe1,stroke:#1a7f37,color:#24292f,stroke-width:1.5px;
-    classDef gate fill:#ffebe9,stroke:#cf222e,color:#24292f,stroke-width:1.5px;
-    class CHANGE,PYTEST entry;
-    class SELECT,CFG,HTTP,DRIVER,PAGE,REPO policy;
-    class UNIT,API,DB,UI,FIX,SQLITE runtime;
-    class MAN,DIAG,REPORTS,RESULT evidence;
-    class EXT,EG,SEC,SG,DOCS,DG,CIG gate;
-    linkStyle default stroke:#57606a,stroke-width:1.4px;'''
+              classDef entry fill:#ddf4ff,stroke:#0969da,color:#24292f,stroke-width:1.5px;
+              classDef policy fill:#fbefff,stroke:#8250df,color:#24292f,stroke-width:1.5px;
+              classDef runtime fill:#fff8c5,stroke:#9a6700,color:#24292f,stroke-width:1.5px;
+              classDef evidence fill:#dafbe1,stroke:#1a7f37,color:#24292f,stroke-width:1.5px;
+              classDef gate fill:#ffebe9,stroke:#cf222e,color:#24292f,stroke-width:1.5px;
+              class CHANGE,PYTEST entry;
+              class SELECT,CFG,HTTP,DRIVER,PAGE,REPO policy;
+              class UNIT,API,DB,UI,FIX,SQLITE runtime;
+              class MAN,DIAG,REPORTS,RESULT evidence;
+              class EXT,EG,SEC,SG,DOCS,DG,CIG gate;
+              linkStyle default stroke:#57606a,stroke-width:1.4px;'''
+          diagram = '\n'.join(line[14:] if line.startswith('              ') else line for line in diagram.splitlines())
           pattern = re.compile(r'(## Architecture\n\n```mermaid\n)(.*?)(\n```)', re.S)
           matches = list(pattern.finditer(text))
           if len(matches) != 1:
               raise SystemExit(f'expected exactly one Architecture Mermaid block, found {len(matches)}')
-          updated = pattern.sub(lambda m: m.group(1) + diagram + m.group(3), text, count=1)
-          path.write_text(updated, encoding='utf-8')
-          PY
-      - name: Remove one-shot workflow and commit
+          path.write_text(pattern.sub(lambda m: m.group(1) + diagram + m.group(3), text, count=1), encoding='utf-8')
+      - name: Commit reference-quality Mermaid diagram
         shell: bash
         run: |
+          set -euo pipefail
           rm .github/workflows/reference-mermaid-polish.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add README.md .github/workflows/reference-mermaid-polish.yml
           git diff --cached --check
-          git commit -m "docs: elevate README architecture diagram"
+          git commit -m 'docs: elevate README architecture diagram'
           git push origin HEAD:docs/reference-quality-mermaid
