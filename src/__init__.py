@@ -1,4 +1,4 @@
-"""Top-level package for the QA automation demo.
+"""Top-level package for the QA automation framework.
 
 Importing this package ensures that the `src` directory is recognised as a
 Python package, allowing relative imports in tests.  No functions or
