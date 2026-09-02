@@ -40,7 +40,8 @@ A layered Python quality-engineering framework for deterministic **unit, API, co
 
 ```mermaid
 flowchart TD
-    PYTEST[pytest orchestration] --> SELECT[Optional capability selector]
+    CHANGE[Repository change] --> PYTEST[pytest orchestration]
+    PYTEST --> SELECT[Optional capability selector]
     PYTEST --> CFG[TestSettings]
     PYTEST --> UNIT[Unit / framework contracts]
     PYTEST --> API[API / schema tests]
@@ -56,17 +57,34 @@ flowchart TD
     REPO --> SQLITE[(SQLite)]
     PYTEST --> MAN[Controller-owned run manifest]
     UI --> DIAG[Failure-only diagnostics]
-    MAN --> REPORTS[reports/]
+    MAN --> REPORTS[Governed test evidence]
     DIAG --> REPORTS
+    REPORTS --> CIG[CI / ci-gate]
+
+    CHANGE --> EXT[Cross-browser + bounded Locust]
+    EXT --> EG[Extended / extended-gate]
+
+    CHANGE --> SEC[CodeQL · Trivy · Dependency Review]
+    SEC --> SG[Security / security-gate]
+
+    CHANGE --> DOCS[README + workflow contracts]
+    DOCS --> DG[Docs / readme-contract]
+
+    CIG --> RESULT[Qualified repository change]
+    EG --> RESULT
+    SG --> RESULT
+    DG --> RESULT
 
     classDef entry fill:#ddf4ff,stroke:#0969da,color:#24292f,stroke-width:1.5px;
-    classDef core fill:#f6f8fa,stroke:#57606a,color:#24292f,stroke-width:1.5px;
-    classDef boundary fill:#dafbe1,stroke:#1a7f37,color:#24292f,stroke-width:1.5px;
-    classDef evidence fill:#fff8c5,stroke:#9a6700,color:#24292f,stroke-width:1.5px;
-    class PYTEST entry;
-    class SELECT,CFG,UNIT,API,DB,HTTP,REPO,SQLITE core;
-    class UI,DRIVER,PAGE,FIX boundary;
-    class MAN,DIAG,REPORTS evidence;
+    classDef policy fill:#fbefff,stroke:#8250df,color:#24292f,stroke-width:1.5px;
+    classDef runtime fill:#fff8c5,stroke:#9a6700,color:#24292f,stroke-width:1.5px;
+    classDef evidence fill:#dafbe1,stroke:#1a7f37,color:#24292f,stroke-width:1.5px;
+    classDef gate fill:#ffebe9,stroke:#cf222e,color:#24292f,stroke-width:1.5px;
+    class CHANGE,PYTEST entry;
+    class SELECT,CFG,HTTP,DRIVER,PAGE,REPO policy;
+    class UNIT,API,DB,UI,FIX,SQLITE runtime;
+    class MAN,DIAG,REPORTS,RESULT evidence;
+    class EXT,EG,SEC,SG,DOCS,DG,CIG gate;
     linkStyle default stroke:#57606a,stroke-width:1.4px;
 ```
 
