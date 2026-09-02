@@ -31,7 +31,7 @@ A layered Python quality-engineering framework for deterministic **unit, API, co
 | Native pytest surface | Parametrization, fixtures, marks, warnings/exceptions, mocking, asyncio, focused selection | Normal pytest collection | Native node IDs + pytest reports |
 | Browser CI | Critical Chrome workflow behavior | Selenium + headless Chrome + local fixture | JUnit, manifest, bounded diagnostics |
 | Extended browser | Engine compatibility | Chrome + Firefox | Per-browser JUnit + summaries |
-| Security | Python SAST, dependency/configuration/secret risk, and PR dependency-change risk | CodeQL + Trivy + Dependency Review when GitHub Dependency graph is available | CodeQL result, Trivy JSON/summary, dependency-review status |
+| Security | Workflow/lock provenance, Python SAST, dependency/configuration/secret risk, and PR dependency-change risk | Supply-chain policy + CodeQL + Trivy + Dependency Review when GitHub Dependency graph is available | Policy result, CodeQL result, Trivy JSON/summary, dependency-review status |
 | Optional DAST | Active behavior of the controlled service | OWASP ZAP, loopback only | Alert classification |
 | Performance | Workload policy plus explicit latency/throughput experiments | Locust; bounded loopback script-health smoke in extended CI | Native Locust metrics |
 | Documentation | README/workflow/governance consistency | Repository-local validator | Actions status |
@@ -64,7 +64,7 @@ flowchart TD
     CHANGE --> EXT[Cross-browser + bounded Locust]
     EXT --> EG[Extended / extended-gate]
 
-    CHANGE --> SEC[CodeQL · Trivy · Dependency Review]
+    CHANGE --> SEC[Supply-chain policy · CodeQL · Trivy · Dependency Review]
     SEC --> SG[Security / security-gate]
 
     CHANGE --> DOCS[README + workflow contracts]
