@@ -133,6 +133,26 @@ def _wait_for_fixture_owner(
     )
 
 
+def _finalize_browser(
+    browser: WebDriver,
+    *,
+    request: pytest.FixtureRequest,
+    settings: RuntimeSettings,
+) -> None:
+    """Capture governed failure evidence without weakening WebDriver teardown."""
+    try:
+        call_report = getattr(request.node, "rep_call", None)
+        if call_report is not None and call_report.failed:
+            capture_failure_evidence(
+                browser,
+                report_dir=Path(os.getenv("TEST_REPORT_DIR", "reports")),
+                nodeid=request.node.nodeid,
+                run_id=settings.run_id,
+            )
+    finally:
+        browser.quit()
+
+
 @pytest.fixture(scope="session")
 def db_engine() -> Generator[Engine, None, None]:
     """Create, seed, and deterministically dispose an in-memory SQLite engine."""
@@ -204,12 +224,4 @@ def driver(run_mock_api: None, request: pytest.FixtureRequest) -> Generator[WebD
     try:
         yield browser
     finally:
-        call_report = getattr(request.node, "rep_call", None)
-        if call_report is not None and call_report.failed:
-            capture_failure_evidence(
-                browser,
-                report_dir=Path(os.getenv("TEST_REPORT_DIR", "reports")),
-                nodeid=request.node.nodeid,
-                run_id=settings.run_id,
-            )
-        browser.quit()
+        _finalize_browser(browser, request=request, settings=settings)
