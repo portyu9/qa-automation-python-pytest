@@ -1,17 +1,17 @@
 [
   {
     "id": 1,
-    "title": "Hello World",
-    "body": "This is a sample post for my API tests."
+    "title": "Framework Health",
+    "body": "Deterministic fixture data for API contract verification."
   },
   {
     "id": 2,
-    "title": "Another Post",
-    "body": "Testing JSON API with multiple records."
+    "title": "State Transition",
+    "body": "A second record supports collection and selection assertions."
   },
   {
     "id": 3,
-    "title": "Final Entry",
-    "body": "I built this dataset to feed my mock Flask API."
+    "title": "Evidence Boundary",
+    "body": "Repository-owned data keeps required API tests independent of public services."
   }
 ]
