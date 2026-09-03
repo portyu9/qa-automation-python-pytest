@@ -10,10 +10,6 @@ extend-exclude = [".venv", "reports", "artifacts"]
 select = ["E", "F", "B", "SIM"]
 ignore = ["E501"]
 
-[tool.pytest.ini_options]
-# pytest.ini remains the single source of execution policy. This section is
-# intentionally empty to avoid split configuration ownership.
-
 [tool.coverage.run]
 branch = true
 source = ["src"]
