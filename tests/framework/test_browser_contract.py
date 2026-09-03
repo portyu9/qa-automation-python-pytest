@@ -1,7 +1,9 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
+from conftest import _finalize_browser
 from src.browser import (
     _ResourceSafeFirefoxService,
     _redact_url,
@@ -66,6 +68,44 @@ def test_browser_evidence_paths_remain_unique_after_label_redaction(tmp_path):
         assert "secret" not in metadata["test"]
         assert metadata["currentUrl"] == "https://example.test/ui"
         assert metadata["screenshot"]
+
+
+@pytest.mark.unit
+def test_browser_teardown_quits_driver_when_failure_evidence_raises(monkeypatch):
+    events = []
+
+    class StubDriver:
+        def quit(self):
+            events.append("quit")
+
+    def fail_evidence(*args, **kwargs):
+        del args, kwargs
+        events.append("evidence")
+        raise OSError("evidence filesystem unavailable")
+
+    monkeypatch.setattr("conftest.capture_failure_evidence", fail_evidence)
+    request = SimpleNamespace(
+        node=SimpleNamespace(
+            nodeid="tests/e2e/test_example.py::test_failure",
+            rep_call=SimpleNamespace(failed=True),
+        )
+    )
+    settings = RuntimeSettings(
+        base_url="http://127.0.0.1:5000",
+        ui_base_url="http://127.0.0.1:5000/ui",
+        browser="chrome",
+        headless=True,
+        browser_timeout_seconds=10.0,
+        connect_timeout_seconds=5.0,
+        read_timeout_seconds=15.0,
+        retry_total=2,
+        run_id="teardown-contract",
+    )
+
+    with pytest.raises(OSError, match="evidence filesystem unavailable"):
+        _finalize_browser(StubDriver(), request=request, settings=settings)
+
+    assert events == ["evidence", "quit"]
 
 
 @pytest.mark.unit
