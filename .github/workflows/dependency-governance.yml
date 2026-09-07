@@ -6,7 +6,11 @@ on:
       - '.github/dependency-governance.json'
       - '.github/scripts/dependency_governance.py'
       - '.github/scripts/dependency_governance_selfcheck.py'
+      - '.github/scripts/dependency_lock_publisher.py'
+      - '.github/scripts/dependency_lock_publisher_selfcheck.py'
       - '.github/workflows/dependency-governance.yml'
+      - '.github/workflows/dependency-locks.yml'
+      - '.github/workflows/dependency-lock-publisher.yml'
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review]
   workflow_run:
@@ -54,11 +58,13 @@ jobs:
         with:
           python-version: '3.14'
       - name: Compile governance control plane
-        run: python -m compileall -q .github/scripts/dependency_governance.py .github/scripts/dependency_governance_selfcheck.py
+        run: python -m compileall -q .github/scripts/dependency_governance.py .github/scripts/dependency_governance_selfcheck.py .github/scripts/dependency_lock_publisher.py .github/scripts/dependency_lock_publisher_selfcheck.py
       - name: Validate governance configuration
         run: python .github/scripts/dependency_governance.py --validate-config
       - name: Exercise dependency-governance policy self-check
         run: python .github/scripts/dependency_governance_selfcheck.py
+      - name: Exercise dependency-lock publisher self-check
+        run: python .github/scripts/dependency_lock_publisher_selfcheck.py
 
   govern:
     name: govern-dependabot
