@@ -16,145 +16,67 @@
 [![License](https://img.shields.io/badge/License-MIT-2EA44F?logo=opensourceinitiative&logoColor=white)](LICENSE)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-24292F?logo=github&logoColor=white)](.github/SECURITY.md)
 
-A layered Python quality-engineering framework for deterministic **unit, API, contract, persistence, browser, security, and performance** verification. `pytest` remains the orchestration surface; framework code exists only where a durable policy needs a single owner: configuration, HTTP transport, database lifecycle, WebDriver construction, synchronization, run correlation, privacy-aware evidence, and optional capability-focused collection.
+A layered Python quality-engineering framework for deterministic **unit, API, contract, persistence, browser, security, and performance** verification. `pytest` remains the orchestration surface; reusable framework code exists only where a durable policy needs one owner.
 
 > [!IMPORTANT]
-> The governing principle is **failure attribution before test volume**. A failed run should identify the first broken boundary—configuration, fixture lifecycle, transport, protocol, persistence, browser behavior, security policy, documentation contract, or external infrastructure—without forcing the reader to reverse-engineer the framework.
+> The governing principle is **failure attribution before test volume**: a failed run should identify the first broken boundary without forcing the reader to reverse-engineer the framework.
 
-**Read by intent:** [capabilities](#capability-map) · [architecture](#architecture) · [quick start](#quick-start) · [pytest-native surface](#pytest-native-capability-surface) · [runtime policy](#runtime-configuration) · [browser policy](#selenium-browser-policy) · [CI/evidence](#ci-and-evidence) · [dependency maintenance](#dependency-maintenance) · [failure triage](#failure-triage)
+**Start here:** [capabilities](#capabilities) · [architecture](#architecture) · [quick start](#quick-start) · [repository map](#repository-map) · [documentation](#documentation)
 
-## Capability map
+## Capabilities
 
-| Validation plane | What it proves | Default execution | Primary evidence |
-| --- | --- | --- | --- |
-| Fast CI | Unit, API, executable OpenAPI contract, persistence, framework invariants | supported Python runtimes | Validated JUnit, coverage XML, run manifest |
-| Native pytest surface | Parametrization, fixtures, marks, warnings/exceptions, mocking, asyncio, focused selection | Normal pytest collection | Native node IDs + pytest reports |
-| Browser CI | Critical Chrome workflow behavior | Selenium + headless Chrome + local fixture | JUnit, manifest, bounded diagnostics |
-| Extended browser | Engine compatibility | Chrome + Firefox | Per-browser JUnit + summaries |
-| Security | Workflow/lock provenance, Python SAST, dependency/configuration/secret risk, and PR dependency-change risk | Supply-chain policy + CodeQL + Trivy + Dependency Review when GitHub Dependency graph is available | Policy result, CodeQL result, Trivy JSON/summary, dependency-review status |
-| Optional DAST | Active behavior of the controlled service | OWASP ZAP, loopback only | Alert classification |
-| Performance | Workload policy plus explicit latency/throughput experiments | Locust; bounded loopback script-health smoke in extended CI | Native Locust metrics |
-| Documentation | README/workflow/governance consistency | Repository-local validator | Actions status |
+| Validation plane | Purpose | Primary evidence |
+| --- | --- | --- |
+| Fast CI | Unit, API, OpenAPI contract, persistence, framework invariants | JUnit, coverage XML, run manifest |
+| Native pytest | Parametrization, fixtures, marks, warnings/exceptions, mocking, asyncio, focused selection | Native node IDs and pytest reports |
+| Browser | Critical Chrome behavior with Chrome/Firefox compatibility in extended CI | Per-browser JUnit and bounded diagnostics |
+| Security | Supply-chain policy, SAST, dependency/configuration/secret risk, optional controlled DAST | CodeQL, Trivy, Dependency Review, ZAP evidence |
+| Performance | Workload-policy verification and explicit latency/throughput experiments | Locust metrics |
+| Documentation | README, workflow, Mermaid, link, and governance consistency | Documentation contract status |
 
 ## Architecture
 
 ```mermaid
 flowchart TD
     CHANGE[Repository change] --> PYTEST[pytest orchestration]
-    PYTEST --> SELECT[Optional capability selector]
-    PYTEST --> CFG[TestSettings]
-    PYTEST --> UNIT[Unit / framework contracts]
-    PYTEST --> API[API / schema tests]
-    PYTEST --> DB[Persistence tests]
-    PYTEST --> UI[Selenium tests]
-    SELECT --> UNIT
-    API --> HTTP[HTTP client policy]
-    API --> FIX[Repository-local Flask fixture]
-    UI --> DRIVER[WebDriver factory]
-    UI --> PAGE[Page objects]
-    UI --> FIX
-    DB --> REPO[Repository layer]
-    REPO --> SQLITE[(SQLite)]
-    PYTEST --> MAN[Controller-owned run manifest]
-    UI --> DIAG[Failure-only diagnostics]
-    MAN --> REPORTS[Governed test evidence]
-    DIAG --> REPORTS
-    REPORTS --> CIG[CI / ci-gate]
+    PYTEST --> FAST[Unit · API · Contract · Persistence]
+    PYTEST --> UI[Selenium browser]
+    PYTEST --> EVIDENCE[Run manifest + test evidence]
 
-    CHANGE --> EXT[Cross-browser + bounded Locust]
-    EXT --> EG[Extended / extended-gate]
+    FAST --> FIXTURE[Repository-local fixture]
+    FAST --> POLICY[Config · HTTP · DB policy]
+    UI --> BROWSER[WebDriver + page objects]
+    UI --> FIXTURE
 
-    CHANGE --> SEC[Supply-chain policy · CodeQL · Trivy · Dependency Review]
-    SEC --> SG[Security / security-gate]
+    CHANGE --> EXT[Extended compatibility + Locust smoke]
+    CHANGE --> SEC[Security controls]
+    CHANGE --> DOCS[Documentation contract]
 
-    CHANGE --> DOCS[README + workflow contracts]
-    DOCS --> DG[Docs / readme-contract]
+    EVIDENCE --> CI[CI gates]
+    EXT --> CI
+    SEC --> CI
+    DOCS --> CI
+    CI --> RESULT[Qualified repository change]
 
-    CIG --> RESULT[Qualified repository change]
-    EG --> RESULT
-    SG --> RESULT
-    DG --> RESULT
+    classDef entry fill:#DDF4FF,stroke:#0969DA,color:#24292F,stroke-width:1.5px;
+    classDef test fill:#FFF8C5,stroke:#9A6700,color:#24292F,stroke-width:1.5px;
+    classDef policy fill:#FBEFFF,stroke:#8250DF,color:#24292F,stroke-width:1.5px;
+    classDef evidence fill:#DAFBE1,stroke:#1A7F37,color:#24292F,stroke-width:1.5px;
+    classDef gate fill:#FFEBE9,stroke:#CF222E,color:#24292F,stroke-width:1.5px;
 
-    classDef entry fill:#ddf4ff,stroke:#0969da,color:#24292f,stroke-width:1.5px;
-    classDef policy fill:#fbefff,stroke:#8250df,color:#24292f,stroke-width:1.5px;
-    classDef runtime fill:#fff8c5,stroke:#9a6700,color:#24292f,stroke-width:1.5px;
-    classDef evidence fill:#dafbe1,stroke:#1a7f37,color:#24292f,stroke-width:1.5px;
-    classDef gate fill:#ffebe9,stroke:#cf222e,color:#24292f,stroke-width:1.5px;
     class CHANGE,PYTEST entry;
-    class SELECT,CFG,HTTP,DRIVER,PAGE,REPO policy;
-    class UNIT,API,DB,UI,FIX,SQLITE runtime;
-    class MAN,DIAG,REPORTS,RESULT evidence;
-    class EXT,EG,SEC,SG,DOCS,DG,CIG gate;
-    linkStyle default stroke:#57606a,stroke-width:1.4px;
+    class FAST,UI,FIXTURE,BROWSER test;
+    class POLICY policy;
+    class EVIDENCE,RESULT evidence;
+    class EXT,SEC,DOCS,CI gate;
+    linkStyle default stroke:#57606A,stroke-width:1.4px;
 ```
 
-The architecture is intentionally asymmetric: tests own **intent**, fixtures own **lifecycle**, framework modules own **cross-cutting policy**, and native tools retain their own failure semantics.
-
-## Engineering invariants
-
-| Concern | Framework contract |
-| --- | --- |
-| Configuration | Parse external values once; reject unsafe URL/type/range values before side effects. |
-| Deterministic targets | Committed API/UI defaults are repository-local; public services are never required for framework health. |
-| Pytest ownership | Native parametrization, fixtures, marks, reports, warnings/exceptions, plugins, and node IDs remain visible. |
-| Focused execution | `--capability` is opt-in collection filtering; without it, normal full-suite semantics are unchanged. |
-| HTTP policy | Pooling, connect/read budgets, correlation, and bounded retries for safe/idempotent methods only. |
-| Persistence | The owner that creates an engine/session closes or disposes it deterministically. |
-| Browser lifecycle | One WebDriver session per browser test; teardown always quits the driver. |
-| Synchronization | Explicit conditions describe readiness; implicit waits and fixed sleeps are not readiness models. |
-| Parallelism | Workers do not race the controller-owned run manifest or shared mutable state. |
-| Evidence | Automatic diagnostics are bounded, failure-oriented, and avoid credentials/storage/page-source collection. |
-| Security | SAST, repository/dependency scanning, dependency-diff review, and active DAST are separate controls with different evidence and authorization models. |
-| CI integrity | Native command exit codes remain authoritative; reporting cannot turn failure into success. |
-
-## Boundary decision guide
-
-A requirement belongs at the **lowest layer that can conclusively prove it**.
-
-| Question | Preferred boundary | Why |
-| --- | --- | --- |
-| Pure rule/transformation? | Unit | Lowest dependency and fastest diagnosis |
-| HTTP status/body/headers? | API | Proves protocol without browser cost |
-| Response structure compatibility? | Contract/schema | Makes structural drift explicit |
-| Repository/transaction semantics? | Persistence | Database behavior is the subject |
-| Rendering/navigation/input? | Browser | Requires a real browser engine |
-| Browser compatibility? | Extended matrix | Compatibility is a distinct risk dimension |
-| Dependency/config exposure? | Security workflow | Repository risk, not application behavior |
-| Dynamic security behavior? | Authorized DAST | Active scanning needs explicit target control |
-| Latency/throughput/capacity? | Locust | Performance requires a workload model |
-
-> [!TIP]
-> A browser test is not “more complete” simply because it crosses more layers. It is more expensive and has more failure causes. Use it when browser semantics are material.
-
-## Repository map
-
-```text
-.
-├── .github/
-│   ├── scripts/
-│   └── workflows/
-├── contract/
-├── docs/
-├── mock/
-├── performance/
-├── requirements-lock/
-├── src/
-│   ├── pages/
-│   └── repositories/
-└── tests/
-    ├── api/
-    ├── contract/
-    ├── db/
-    ├── e2e/
-    ├── framework/
-    ├── performance/
-    ├── security/
-    └── unit/
-```
+Tests own **intent**, fixtures own **lifecycle**, framework modules own **cross-cutting policy**, and native tools retain their failure semantics. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for dependency direction, lifecycle ownership, parallelism, and evidence boundaries.
 
 ## Quick start
 
-CI qualifies every supported Python runtime. One runtime is designated the primary quality, browser, and performance line; the remaining supported runtimes are explicit fast-suite compatibility lines. `requirements.txt` is the human-maintained direct compatibility input, while CI installs a generated interpreter-specific hash lock. Choose the lock matching the active Python runtime.
+Choose the interpreter-specific lock matching the active supported Python runtime:
 
 ```bash
 python -m venv .venv
@@ -163,8 +85,6 @@ python -m pip install --require-hashes -r requirements-lock/<matching-runtime>.t
 pytest --ignore=tests/e2e --ignore=tests/performance --ignore=tests/security
 ```
 
-For any supported Python runtime, use the corresponding file in `requirements-lock/`. Use `pip install -r requirements.txt` only when intentionally resolving dependency changes and regenerating all supported-interpreter locks; it is not the CI installation path.
-
 Run browser compatibility explicitly:
 
 ```bash
@@ -172,174 +92,60 @@ TEST_BROWSER=chrome pytest tests/e2e
 TEST_BROWSER=firefox pytest tests/e2e
 ```
 
-Run a focused native-capability slice without changing default collection behavior:
+Run a focused native pytest capability without changing normal collection semantics:
 
 ```bash
 pytest tests/framework/test_pytest_capabilities.py --capability=fixtures
-pytest tests/framework/test_pytest_capabilities.py --capability=asyncio --capability=mocking
 ```
 
-<details>
-<summary><strong>Command reference</strong></summary>
+For the complete command reference, runtime variables, dependency workflow, performance authorization, and failure triage, see [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
-```bash
-ruff check .
-python -m compileall -q src tests
-python .github/scripts/validate_readme.py
+## Repository map
 
-pytest --ignore=tests/e2e --ignore=tests/performance --ignore=tests/security \
-  --cov=src --cov-report=term-missing
-
-pytest tests/contract
-pytest tests/performance
-locust -f performance/locustfile.py --headless --host http://127.0.0.1:5000 \
-  --users 1 --spawn-rate 1 --run-time 3s --only-summary
-pytest tests/framework/test_pytest_capabilities.py --capability=parametrization
-TEST_BROWSER=chrome pytest tests/e2e -m smoke
-pytest tests/security -m security
+```text
+.
+├── .github/
+├── contract/
+├── docs/
+├── mock/
+├── performance/
+├── requirements-lock/
+├── src/
+└── tests/
 ```
 
-</details>
+## Engineering contracts
 
-## Pytest-native capability surface
+- **Deterministic targets:** committed framework-health gates use repository-local services rather than public demo dependencies.
+- **Lowest conclusive layer:** prove requirements at unit/API/contract/persistence level before paying browser cost.
+- **Native pytest semantics:** discovery, node IDs, fixtures, markers, reports, warnings, and plugin behavior remain visible.
+- **Explicit lifecycle ownership:** the scope that creates a driver, engine, session, process, or evidence file owns deterministic cleanup.
+- **Bounded retries and waits:** retry only known transient safe operations; synchronize browsers to observable state rather than fixed sleeps.
+- **Privacy-aware evidence:** generic diagnostics are failure-oriented and exclude credential-bearing or unnecessary application data.
+- **Authoritative exits:** reporting and artifact collection never convert a native test/tool failure into success.
 
-`src/pytest_capabilities.py` is a deliberately small extension layer. It adds one repeatable `--capability NAME` option, dynamically registers the strict `capability(name)` marker, applies selection after pytest has built the collection, and reports the active slice in pytest's normal terminal header. It does **not** replace pytest discovery, node IDs, marks, fixture resolution, or reporting.
+## Quality gates
 
-`tests/framework/test_pytest_capabilities.py` keeps representative first-class pytest behavior executable:
-
-- parameter matrices with stable IDs and `pytest.approx`;
-- exception and warning contracts through `pytest.raises` and `pytest.warns`;
-- isolated built-in fixtures including `tmp_path`, `monkeypatch`, `capsys`, and `caplog`;
-- `pytest-mock` spies that preserve real behavior while asserting calls;
-- `pytest-asyncio` native async test execution;
-- named capability marks for targeted troubleshooting or teaching without creating a second test-discovery system.
-
-> [!IMPORTANT]
-> Capability selection is an **operator convenience**, not a coverage definition. Required CI still runs the intended full gates. A narrow local slice must never be mistaken for proof that unrelated layers are healthy.
-
-## Runtime configuration
-
-`src/config.py` is the environment boundary. Invalid values fail before useful network/browser work.
-
-| Variable | Purpose | Default |
-| --- | --- | --- |
-| `TEST_BASE_URL` | API target | `http://127.0.0.1:5000` |
-| `TEST_UI_BASE_URL` | Browser target | `http://127.0.0.1:5000/ui` |
-| `TEST_BROWSER` | `chrome` or `firefox` | `chrome` |
-| `TEST_HEADLESS` | Headless browser mode | `true` |
-| `TEST_BROWSER_TIMEOUT_SECONDS` | Browser condition budget | `10` |
-| `TEST_CONNECT_TIMEOUT_SECONDS` | HTTP connect budget | `5` |
-| `TEST_READ_TIMEOUT_SECONDS` | HTTP read budget | `15` |
-| `TEST_RETRY_TOTAL` | Safe-method retry budget | `2` |
-| `TEST_RUN_ID` | Cross-layer correlation | generated UUID |
-| `TEST_REPORT_DIR` | Evidence directory | `reports` |
-
-Base URLs may contain path prefixes but not credentials, query strings, fragments, malformed ports, or unsupported schemes.
-
-## Selenium browser policy
-
-`src/browser.py` owns driver construction; `conftest.py` owns fixture scope/teardown; `src/pages/` owns feature interactions.
-
-- Selenium Manager may resolve compatible local drivers; binaries are not committed.
-- Chrome and Firefox are explicit compatibility dimensions.
-- implicit waits remain disabled;
-- page objects use meaningful `WebDriverWait` conditions;
-- each browser test receives a fresh session;
-- screenshots are failure-only;
-- generic diagnostics exclude cookies, storage, request bodies, page source, and credential-bearing URLs.
-
-> [!WARNING]
-> Fixed sleeps convert an unknown readiness condition into a slower unknown readiness condition. Synchronize to observable state instead.
-
-## Deterministic fixture and transport policy
-
-`mock/server.py` owns `/posts`, `/posts/<id>`, `/health`, `/ui`, and `/ui/details`. Required API, OpenAPI contract, browser, and script-health performance gates therefore exercise real local behavior without depending on public DNS, third-party uptime, rate limits, or content drift.
-
-`src/http_client.py` centralizes persistent sessions, separate connect/read budgets, bounded retries, safe-method retry eligibility, `X-Test-Run-Id`, and deterministic close semantics. Assertion retries and blind retries around mutating requests are deliberately excluded.
-
-`contract/openapi.yaml` is executable: the fast contract suite validates the OpenAPI document and validates repository-owned provider responses against its committed response schema. Structural compatibility remains separate from semantic API assertions.
-
-`performance/locustfile.py` defaults to loopback. An external workload requires both `PERF_ALLOW_EXTERNAL=true` and an exact hostname in `PERF_ALLOWED_HOSTS`; changing `--host` alone is insufficient authorization. The extended workflow runs only a bounded single-user loopback smoke to prove workload health. Capacity, saturation, and service-level conclusions require an explicitly designed experiment against an approved environment.
-
-## Persistence policy
-
-SQLAlchemy tests use deterministic SQLite state while retaining explicit session/engine ownership. Replacing SQLite with PostgreSQL/MySQL/SQL Server does not change the lifecycle rule: tests must define transaction ownership, data creation, cleanup, isolation, and whether the requirement is repository semantics or infrastructure integration.
-
-## CI and evidence
-
-- `ci.yml` — primary Python runtime source quality and xdist ownership contract; supported Python runtimes interpreter-specific `--require-hashes` fast gates including executable OpenAPI contracts; non-empty JUnit/coverage validation; deterministic Chrome on primary Python runtime.
-- `extended.yml` — primary Python runtime hash-locked Chrome/Firefox compatibility plus a bounded loopback Locust script-health smoke with retained CSV metrics on relevant changes, `main`, schedule, and manual dispatch.
-- `security.yml` — CodeQL Python SAST, independent Trivy HIGH/CRITICAL filesystem/dependency/configuration/secret scanning, and pull-request Dependency Review when GitHub Dependency graph is available.
-- `docs.yml` — local-link/badge/Mermaid/governance validation without external-site uptime coupling.
-
-When GitHub Dependency graph is unavailable, the PR security workflow records that limitation and the independent Trivy job remains a required repository-wide fallback gate. Trivy is not presented as equivalent to Dependency Review: enable Dependency graph in repository security settings to restore change-aware dependency-diff analysis.
-
-`src/run_manifest.py` gives run-level evidence one writer under xdist: workers emit pytest events, the controller serializes the manifest. Browser evidence uses the same run identity.
-
-## Confidence boundaries
-
-A green signal is evidence about a defined risk boundary, not a universal claim about system quality.
-
-| Signal | Confidence gained | Deliberate limit |
-| --- | --- | --- |
-| Unit/framework contracts | Pure policy, lifecycle, selection, and failure semantics behave deterministically | Does not prove HTTP, database-engine, or browser integration |
-| API + OpenAPI contract | Repository-owned provider behavior satisfies HTTP semantics and the committed structural schema | Structural compatibility does not prove every business invariant or external-provider behavior |
-| SQLite persistence | Repository/session ownership, transaction behavior, and deterministic data semantics are executable | Does not prove production database engine, topology, locking, replication, or migration behavior |
-| Selenium browser gates | Covered user flows behave in the explicitly qualified browser engines against the controlled fixture | Does not imply universal browser, device, assistive-technology, or deployed-environment coverage |
-| Locust loopback smoke | Workload code starts, targets the authorized fixture, emits metrics, and respects execution policy | It is not a capacity, saturation, scalability, or service-level result |
-| Authorized ZAP checks | The configured active-scan surface is executable against the controlled target | It is not equivalent to a penetration test or proof of vulnerability absence |
-| CodeQL / Trivy / dependency review | Independent scanners evaluate their governed code, dependency, configuration, secret, and change-diff scopes | Scanner success is bounded by rule coverage, vulnerability data, repository visibility, and the evidence actually inspected |
-
-The framework therefore treats **confidence as compositional**: choose the lowest-cost boundary that can prove the requirement, then add broader integration only when the requirement depends on broader semantics.
-
-## Dependency maintenance
-
-Dependabot is configured for **pip** and **GitHub Actions**. `requirements.txt` declares bounded direct compatibility, while `requirements-lock/<matching-runtime>.txt` represents the generated per-interpreter resolution artifacts for supported CI runtimes. Each lock pins the complete resolved graph and package hashes; production CI installs with `pip --require-hashes` and verifies the installed graph with `pip check`.
-
-- version updates run weekly on Monday at 09:00 America/New_York;
-- scheduled pip version updates are limited to direct dependencies declared by the project; resolver-owned transitive packages move when a compatible direct dependency resolution requires them rather than being upgraded independently;
-- routine direct minor/patch updates are grouped to reduce review noise;
-- major upgrades remain isolated so compatibility changes stay attributable;
-- GitHub Actions are maintained as their own dependency surface;
-- dependency changes require intentional lock regeneration for all four supported Python minors, manifest-provenance validation, strict-hash installation, and installed-graph consistency checks;
-- dependency PRs are not assumed safe because they are automated—CI, security, docs, release notes, resolved-graph review, and behavioral impact still decide mergeability.
-
-The compatibility manifest and generated locks have different jobs: `requirements.txt` expresses allowed direct ranges; the committed locks make CI resolution reproducible. Scheduled version updates target direct dependencies, while vulnerability handling remains an independent security concern for the complete resolved graph. Dependabot complements, rather than replaces, CodeQL, Dependency Review, and Trivy.
-
-## Failure triage
-
-| Signal | First interpretation |
+| Gate | Responsibility |
 | --- | --- |
-| Capability selection/discovery | Marker/selector contract; confirm intended slice before debugging test logic |
-| Configuration contract | Invalid framework/runtime input |
-| Hash-locked install | Dependency graph drift, missing artifact hash, or wrong interpreter lock |
-| Local fixture startup | Repository-owned service lifecycle |
-| HTTP transport | Connectivity/timeout/retry policy |
-| API assertion/schema | Protocol/semantic/contract behavior |
-| Persistence | Repository/transaction/lifecycle semantics |
-| Driver creation | Browser/runtime infrastructure |
-| Explicit-wait timeout | Expected observable browser state absent |
-| Browser-only failure | UI behavior or compatibility |
-| Retry-only pass | Reliability/flakiness signal |
-| Security/docs | Independent repository governance failure |
-| External-target-only failure | Environment/integration first |
+| [`ci.yml`](.github/workflows/ci.yml) | Supported-runtime fast suites, executable OpenAPI contracts, source quality, evidence validation, Chrome smoke |
+| [`extended.yml`](.github/workflows/extended.yml) | Chrome/Firefox compatibility and bounded loopback Locust script-health smoke |
+| [`security.yml`](.github/workflows/security.yml) | Supply-chain policy, CodeQL, Trivy, and Dependency Review when available |
+| [`docs.yml`](.github/workflows/docs.yml) | README/local-link/badge/Mermaid/governance consistency |
 
-## Explicit anti-patterns
+A green gate is evidence about its defined risk boundary, not a universal claim of system quality. The detailed confidence limits are documented in [`docs/OPERATIONS.md`](docs/OPERATIONS.md#confidence-boundaries).
 
-- required CI against public demo sites or APIs;
-- replacing pytest collection/reporting with a custom framework merely to group tests;
-- browser setup for behavior that can be proven below the UI;
-- fixed sleeps or mixed implicit/explicit waits;
-- blanket retries, especially around mutations;
-- shared mutable test state or multi-writer evidence files;
-- credentials, cookies, storage, page source, or arbitrary payloads in generic diagnostics;
-- reports that swallow the original process exit code;
-- abstractions that merely rename native pytest/Selenium/requests APIs.
+## Documentation
 
-## Design references
+| Guide | Use it for |
+| --- | --- |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Dependency direction, configuration/HTTP/DB/browser boundaries, fixture ownership, parallelism, evidence, extension rules |
+| [`docs/TEST_STRATEGY.md`](docs/TEST_STRATEGY.md) | Layer selection, browser strategy, selectors, retries, test data, security, performance, CI gating |
+| [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Commands, runtime configuration, deterministic fixture/transport policy, CI evidence, dependency maintenance, triage |
+| [`contract/openapi.yaml`](contract/openapi.yaml) | Version-controlled executable API contract |
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — configuration, transport, persistence, Selenium lifecycle, parallelism, and evidence boundaries.
-- [`docs/TEST_STRATEGY.md`](docs/TEST_STRATEGY.md) — layer selection, browser coverage, reliability, security, performance, and CI gates.
-- [`contract/openapi.yaml`](contract/openapi.yaml) — version-controlled executable API contract.
+The deeper flow and CI diagrams live in `/docs`; the main README intentionally retains only the architecture overview above.
 
-The framework should evolve by making **test intent clearer, dependencies more explicit, failures more attributable, and retained evidence safer**. New abstraction is justified only when it enforces a durable engineering policy or removes a demonstrated source of ambiguity.
+## Design principle
+
+The framework should evolve by making **test intent clearer, dependencies more explicit, failures more attributable, and retained evidence safer**. Add abstraction only when it enforces a durable engineering policy or removes a demonstrated source of ambiguity.
