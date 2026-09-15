@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "maxRunAttempts": 2,
+  "transientSteps": [
+    "Install hash-locked Python 3.14 dependency graph",
+    "Install hash-locked dependency graph for Python 3.11",
+    "Install hash-locked dependency graph for Python 3.14",
+    "Upload functional evidence",
+    "Upload browser evidence",
+    "Upload cross-browser evidence",
+    "Upload performance evidence",
+    "Upload security evidence",
+    "Install pinned lock compiler",
+    "Compile hash-locked dependency graph",
+    "Verify strict hash installation",
+    "Upload one interpreter lock"
+  ]
+}
