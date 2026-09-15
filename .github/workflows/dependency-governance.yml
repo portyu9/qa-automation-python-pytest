@@ -3,9 +3,13 @@ name: dependency-governance
 on:
   pull_request:
     paths:
+      - '.github/dependabot.yml'
       - '.github/dependency-governance.json'
+      - '.github/dependency-recovery.json'
       - '.github/scripts/dependency_governance.py'
       - '.github/scripts/dependency_governance_selfcheck.py'
+      - '.github/scripts/dependency_recovery.py'
+      - '.github/scripts/dependency_recovery_selfcheck.py'
       - '.github/scripts/dependency_lock_publisher.py'
       - '.github/scripts/dependency_lock_publisher_selfcheck.py'
       - '.github/workflows/dependency-governance.yml'
@@ -14,7 +18,7 @@ on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review]
   workflow_run:
-    workflows: [ci, extended, security, docs]
+    workflows: [ci, extended, security, docs, dependency-locks]
     types: [completed]
   schedule:
     - cron: '17 */6 * * *'
@@ -39,6 +43,7 @@ concurrency:
 
 env:
   GOVERNANCE_CONFIG: .github/dependency-governance.json
+  RECOVERY_CONFIG: .github/dependency-recovery.json
 
 jobs:
   self-test:
@@ -58,13 +63,29 @@ jobs:
         with:
           python-version: '3.14'
       - name: Compile governance control plane
-        run: python -m compileall -q .github/scripts/dependency_governance.py .github/scripts/dependency_governance_selfcheck.py .github/scripts/dependency_lock_publisher.py .github/scripts/dependency_lock_publisher_selfcheck.py
-      - name: Validate governance configuration
-        run: python .github/scripts/dependency_governance.py --validate-config
-      - name: Exercise dependency-governance policy self-check
-        run: python .github/scripts/dependency_governance_selfcheck.py
-      - name: Exercise dependency-lock publisher self-check
-        run: python .github/scripts/dependency_lock_publisher_selfcheck.py
+        run: >-
+          python -m compileall -q
+          .github/scripts/dependency_governance.py
+          .github/scripts/dependency_governance_selfcheck.py
+          .github/scripts/dependency_recovery.py
+          .github/scripts/dependency_recovery_selfcheck.py
+          .github/scripts/dependency_lock_publisher.py
+          .github/scripts/dependency_lock_publisher_selfcheck.py
+      - name: Validate governance and recovery configuration
+        run: |
+          python .github/scripts/dependency_governance.py --validate-config
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, '.github/scripts')
+          from dependency_recovery import load_recovery_config
+          load_recovery_config()
+          print('dependency-recovery config: valid')
+          PY
+      - name: Exercise dependency-governance policy self-checks
+        run: |
+          python .github/scripts/dependency_governance_selfcheck.py
+          python .github/scripts/dependency_recovery_selfcheck.py
+          python .github/scripts/dependency_lock_publisher_selfcheck.py
 
   govern:
     name: govern-dependabot
@@ -87,8 +108,21 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.14'
-      - name: Validate trusted governance configuration
-        run: python .github/scripts/dependency_governance.py --validate-config
+      - name: Validate trusted governance and recovery configuration
+        run: |
+          python .github/scripts/dependency_governance.py --validate-config
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, '.github/scripts')
+          from dependency_recovery import load_recovery_config
+          load_recovery_config()
+          print('dependency-recovery config: valid')
+          PY
+      - name: Attempt bounded dependency recovery
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ALLOW_RERUN: ${{ github.event_name == 'workflow_run' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        run: python .github/scripts/dependency_recovery.py
       - name: Reconcile dependency governance
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
