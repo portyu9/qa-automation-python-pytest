@@ -2,6 +2,7 @@ version: 2
 updates:
   - package-ecosystem: "pip"
     directory: "/"
+    rebase-strategy: auto
     exclude-paths:
       - "requirements-lock/**"
     schedule:
@@ -25,6 +26,7 @@ updates:
 
   - package-ecosystem: "github-actions"
     directory: "/"
+    rebase-strategy: auto
     schedule:
       interval: "weekly"
       day: "monday"
