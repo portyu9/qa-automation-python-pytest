@@ -214,6 +214,13 @@ class RecoverySelfCheck(unittest.TestCase):
     def test_config_is_bounded_and_semantic_steps_are_forbidden(self) -> None:
         self.assertEqual(validate_recovery_config(RECOVERY), [])
         self.assertEqual(RECOVERY["maxRunAttempts"], 2)
+        for attempts in (1, 3, 4):
+            self.assertTrue(validate_recovery_config({**RECOVERY, "maxRunAttempts": attempts}))
+        unknown = {
+            **RECOVERY,
+            "transientSteps": [*RECOVERY["transientSteps"], "Future Python bootstrap"],
+        }
+        self.assertTrue(validate_recovery_config(unknown))
         for forbidden in (
             "Validate lock provenance and installed graph",
             "Run fast test gate",
