@@ -76,5 +76,8 @@
         ".yaml"
       ]
     }
-  }
+  },
+  "ownerApprovalRequired": true,
+  "ownerApprovalLogin": "portyu9",
+  "ownerApprovalUserId": 35150859
 }

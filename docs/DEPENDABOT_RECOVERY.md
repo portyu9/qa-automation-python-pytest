@@ -13,3 +13,10 @@ The read-only `dependency-locks` workflow is treated separately as an auxiliary 
 The privileged `dependency-lock-publisher` is never rerun or emulated by recovery. It remains the only component allowed to create the generated lock commit and update a `dependabot/pip/*` ref. Recovery contains no Git tree/commit/ref mutation and no merge transport. A stale ordinary Dependabot PR waits for native `rebase-strategy: auto`; a stale already-published pip chain is escalated rather than rewritten.
 
 The Dependabot configuration, recovery configuration and implementation/tests, governance implementation/tests/workflow, lock generator/publisher workflows, and publisher implementation/tests are manual-review control plane.
+
+
+## Owner-authenticated Dependabot control
+
+Autonomous refresh, review, and approval are identity-bound. The trusted governance job uses `GITHUB_TOKEN` for recovery, status, workflow dispatch, and exact-SHA merge, while a separate repository secret named `DEPENDABOT_OWNER_TOKEN` is used only to issue native Dependabot refresh commands, post the owner audit comment, and submit the exact-head approval. Governance verifies that this token resolves to GitHub login `portyu9` and numeric user ID `35150859` before any owner-authenticated action.
+
+The owner token should be a fine-grained token scoped only to this repository with **Issues: read/write** and **Pull requests: read/write**. The owner account must retain push access so Dependabot accepts native chat commands. Do not grant this token Actions, administration, secrets, or contents-write permission. Missing or mismatched owner identity fails closed and prevents autonomous merge.
