@@ -38,7 +38,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: dependency-governance-${{ github.event.pull_request.head.ref || github.event.workflow_run.head_branch || inputs['pr-number'] || github.ref_name || github.run_id }}-${{ github.event_name == 'pull_request' && 'self-test' || 'reconcile' }}
+  # One privileged reconciliation lock prevents schedule/workflow_run/target races
+  # from duplicating owner comments, approvals, recovery, or merge attempts.
+  # Pull-request self-tests remain isolated by their untrusted head branch.
+  group: dependency-governance-${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || 'reconcile' }}
   cancel-in-progress: false
 
 env:
@@ -126,5 +129,6 @@ jobs:
       - name: Reconcile dependency governance
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPENDABOT_OWNER_TOKEN: ${{ secrets.DEPENDABOT_OWNER_TOKEN }}
           ALLOW_MERGE: ${{ github.event_name == 'workflow_run' || github.event_name == 'schedule' || inputs['allow-merge'] }}
         run: python .github/scripts/dependency_governance.py

