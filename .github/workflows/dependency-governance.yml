@@ -16,12 +16,12 @@ on:
       - '.github/workflows/dependency-locks.yml'
       - '.github/workflows/dependency-lock-publisher.yml'
   pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review]
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
   workflow_run:
     workflows: [ci, extended, security, docs, dependency-locks]
     types: [completed]
   schedule:
-    - cron: '17 */6 * * *'
+    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       pr-number:
@@ -94,12 +94,14 @@ jobs:
     name: govern-dependabot
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 8
     permissions:
       actions: write
+      checks: read
       contents: write
       issues: write
       pull-requests: write
+      statuses: read
     steps:
       - name: Checkout trusted default-branch governance code only
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
