@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,6 +27,18 @@ ACTION_LINE = re.compile(
     r"@(?P<ref>[0-9a-fA-F]{40})(?P<suffix>\s+#\s+v(?P<version>\d+(?:\.\d+){0,2})\s*)$"
 )
 POSITIVE_INT = re.compile(r"^[1-9]\d*$")
+QUALIFICATION_POLL_ATTEMPTS = 36
+QUALIFICATION_POLL_INTERVAL_SECONDS = 5.0
+_QUALIFICATION_WAIT_STATES = frozenset(
+    {
+        "requested",
+        "existing-queued",
+        "existing-in_progress",
+        "existing-waiting",
+        "existing-pending",
+        "existing-requested",
+    }
+)
 
 
 class GovernanceError(RuntimeError):
@@ -1329,6 +1342,66 @@ def request_exact_head_qualification_dispatches(
     return outcomes
 
 
+def wait_for_exact_head_qualification_dispatches(
+    api: GitHubApi,
+    assessment: Assessment,
+    config: dict[str, Any],
+    dispatch_outcomes: list[dict[str, Any]],
+    *,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    poll_attempts: int = QUALIFICATION_POLL_ATTEMPTS,
+    poll_interval_seconds: float = QUALIFICATION_POLL_INTERVAL_SECONDS,
+) -> Assessment:
+    """Boundedly wait for trusted exact-head qualification dispatches to settle.
+
+    GitHub suppresses recursive workflow triggers for work initiated with the
+    repository GITHUB_TOKEN. Therefore a trusted workflow_dispatch can run to
+    completion without producing the workflow_run callback that normally wakes
+    this controller. Keep finalization inside the already-privileged controller
+    instead of granting write authority to qualification workflows.
+    """
+    if not any(
+        str(item.get("state") or "") in _QUALIFICATION_WAIT_STATES
+        for item in dispatch_outcomes
+    ):
+        return assessment
+    if poll_attempts < 1:
+        raise GovernanceError("qualification poll_attempts must be positive")
+    if poll_interval_seconds < 0:
+        raise GovernanceError("qualification poll_interval_seconds must be non-negative")
+
+    number = parse_positive_integer(assessment.pull.get("number"), "pull request number")
+    original_head = str((assessment.pull.get("head") or {}).get("sha") or "")
+    original_base = assessment.base_sha
+    if not re.fullmatch(r"[0-9a-f]{40}", original_head):
+        raise GovernanceError("cannot wait for qualification without an exact pull-request head")
+
+    current = assessment
+    for attempt in range(poll_attempts):
+        qualification = current.qualification or {}
+        if qualification.get("allSuccess") is True:
+            return current
+
+        current_head = str((current.pull.get("head") or {}).get("sha") or "")
+        still_exact_subject = (
+            current.pull.get("state") == "open"
+            and current_head == original_head
+            and current.base_sha == original_base
+            and current.provenance.get("eligible") is True
+            and current.metadata.get("eligible") is True
+            and current.semantic.get("eligible") is True
+        )
+        if not still_exact_subject:
+            return current
+        if attempt + 1 >= poll_attempts:
+            break
+
+        sleep_fn(poll_interval_seconds)
+        current = assess_pull(api, number, config, include_qualification=True)
+
+    return current
+
+
 def maybe_merge(
     api: GitHubApi,
     owner_api: GitHubApi | None,
@@ -1426,6 +1499,10 @@ def process_pull(
     )
     if qualification_dispatches:
         assessment = assess_pull(api, number, config, include_qualification=True)
+        if allow_merge:
+            assessment = wait_for_exact_head_qualification_dispatches(
+                api, assessment, config, qualification_dispatches
+            )
     merged, final_assessment, dispatches = maybe_merge(
         api, owner_api, assessment, config, allow_merge
     )
