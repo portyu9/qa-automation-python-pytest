@@ -166,6 +166,10 @@ def validate_config(config: dict[str, Any]) -> list[str]:
         ".github/dependency-governance.json",
         ".github/scripts/dependency_governance.py",
         ".github/scripts/dependency_governance_selfcheck.py",
+        ".github/scripts/validate_codeql_sarif.py",
+        ".github/scripts/validate_codeql_sarif_selfcheck.py",
+        ".github/scripts/validate_security_stack.py",
+        ".github/scripts/validate_security_evidence.py",
         ".github/dependabot.yml",
     }
     for path in sorted(critical):
