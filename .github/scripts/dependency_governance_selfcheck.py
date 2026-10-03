@@ -587,7 +587,7 @@ class DependencyGovernanceTests(unittest.TestCase):
                 if path.startswith("/actions/runs?"):
                     self.assert_selector = selector
                     return list(self.runs)
-                match = re.fullmatch(r"/actions/runs/(\\d+)/jobs", path)
+                match = re.fullmatch(r"/actions/runs/(\d+)/jobs", path)
                 if match:
                     return list(self.jobs[int(match.group(1))])
                 raise AssertionError(path)
