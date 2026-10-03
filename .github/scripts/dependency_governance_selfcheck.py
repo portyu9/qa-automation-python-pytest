@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ from dependency_governance import (
     ACTION_LINE,
     Assessment,
     GovernanceError,
+    PUBLISHED_PIP_CONSUMED_PULL_WORKFLOW_PATHS,
     classify_ecosystem,
     compare_versions,
     ensure_owner_review_and_approval,
@@ -17,6 +19,7 @@ from dependency_governance import (
     has_exact_owner_approval,
     parse_dependabot_metadata,
     parse_positive_integer,
+    qualification_for_head,
     reconcile_independently,
     render_comment,
     request_dependabot_refresh,
@@ -529,6 +532,89 @@ class DependencyGovernanceTests(unittest.TestCase):
             [pull_run, dispatch], pull, requirement, CONFIG
         )
         self.assertEqual(selected["id"], 2)
+
+    def test_published_pip_consumes_only_expected_lock_action_required_run(self) -> None:
+        _, head, pull, _ = canonical_fixture()
+
+        class QualificationApi:
+            def __init__(self) -> None:
+                self.runs: list[dict] = []
+                self.jobs: dict[int, list[dict]] = {}
+                for index, requirement in enumerate(CONFIG["requiredWorkflows"], start=10):
+                    self.runs.append(
+                        {
+                            "id": index,
+                            "name": requirement["workflow"],
+                            "path": f".github/workflows/{requirement['file']}",
+                            "event": "workflow_dispatch",
+                            "head_sha": head,
+                            "head_branch": pull["head"]["ref"],
+                            "actor": {
+                                "login": CONFIG["trustedWorkflowDispatchActorLogin"],
+                                "id": CONFIG["trustedWorkflowDispatchActorUserId"],
+                            },
+                            "triggering_actor": {
+                                "login": CONFIG["trustedWorkflowDispatchActorLogin"],
+                                "id": CONFIG["trustedWorkflowDispatchActorUserId"],
+                            },
+                            "status": "completed",
+                            "conclusion": "success",
+                            "updated_at": f"2026-09-02T12:00:{index:02d}Z",
+                        }
+                    )
+                    self.jobs[index] = [
+                        {
+                            "name": requirement["gate"],
+                            "status": "completed",
+                            "conclusion": "success",
+                        }
+                    ]
+                self.lock_run = {
+                    "id": 99,
+                    "name": "dependency-locks",
+                    "path": ".github/workflows/dependency-locks.yml",
+                    "event": "pull_request",
+                    "head_sha": head,
+                    "head_branch": pull["head"]["ref"],
+                    "pull_requests": [{"number": pull["number"]}],
+                    "status": "completed",
+                    "conclusion": "action_required",
+                    "updated_at": "2026-09-02T12:01:00Z",
+                }
+                self.runs.append(self.lock_run)
+
+            def paginate(self, path: str, selector: str | None = None) -> list[dict]:
+                if path.startswith("/actions/runs?"):
+                    self.assert_selector = selector
+                    return list(self.runs)
+                match = re.fullmatch(r"/actions/runs/(\\d+)/jobs", path)
+                if match:
+                    return list(self.jobs[int(match.group(1))])
+                raise AssertionError(path)
+
+        api = QualificationApi()
+        published = qualification_for_head(
+            api,
+            pull,
+            CONFIG,
+            consumed_action_required_pull_paths=PUBLISHED_PIP_CONSUMED_PULL_WORKFLOW_PATHS,
+        )
+        self.assertTrue(published["allSuccess"], published)
+        self.assertFalse(published["anyFailed"])
+
+        untrusted_exception = qualification_for_head(api, pull, CONFIG)
+        self.assertFalse(untrusted_exception["allSuccess"])
+        self.assertTrue(untrusted_exception["anyFailed"])
+
+        api.lock_run["conclusion"] = "failure"
+        failed_lock = qualification_for_head(
+            api,
+            pull,
+            CONFIG,
+            consumed_action_required_pull_paths=PUBLISHED_PIP_CONSUMED_PULL_WORKFLOW_PATHS,
+        )
+        self.assertFalse(failed_lock["allSuccess"])
+        self.assertTrue(failed_lock["anyFailed"])
 
     def test_action_required_runs_dispatch_exact_head_once_with_security_refs(self) -> None:
         base, head, pull, commit = canonical_fixture()
