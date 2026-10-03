@@ -421,7 +421,12 @@ def validate_provenance(
             reasons.append("PR is not rebased directly on the current base branch head")
         if commit.get("sha") != head.get("sha"):
             reasons.append("PR head SHA does not equal the verified Dependabot commit SHA")
-    return {"eligible": not reasons, "reasons": unique(reasons), "commit": commit}
+    return {
+        "eligible": not reasons,
+        "reasons": unique(reasons),
+        "commit": commit,
+        "state": "canonical-dependabot",
+    }
 
 
 def validate_signed_metadata(commit: dict[str, Any] | None) -> dict[str, Any]:
@@ -530,19 +535,11 @@ def validate_actions_semantic_change(
                 reasons.append(f"{action} uses non-autonomous update type {update_type or 'unknown'}")
 
             old_version, new_version = old_match.group("version"), new_match.group("version")
-            signed_version = signed.get("version")
-            if signed_version:
-                parsed_signed = parse_version(signed_version)
-                parsed_annotation = parse_version(new_version)
-                if parsed_signed is None or parsed_annotation is None:
-                    reasons.append(f"{action} signed or annotated version is not a stable numeric release")
-                else:
-                    annotation_parts = len(new_version.split("."))
-                    if parsed_signed[:annotation_parts] != parsed_annotation[:annotation_parts]:
-                        reasons.append(
-                            f"{action} signed Dependabot version {signed_version} contradicts "
-                            f"workflow annotation v{new_version}"
-                        )
+            # Grouped GitHub Actions metadata can lag the exact immutable pin selected by
+            # Dependabot (for example metadata may name v4.38.1 while the workflow diff
+            # pins v4.38.2). Keep signed metadata authoritative for action identity and
+            # update type, while proving the exact version transition from the reviewed
+            # one-for-one immutable workflow diff itself.
             risk = compare_versions(old_version, new_version)
             if risk in {"major", "major-risk", "downgrade", "unknown"}:
                 reasons.append(f"{action} action annotation transition is {risk}")
@@ -730,6 +727,44 @@ def get_pull_commits(api: GitHubApi, pull: dict[str, Any]) -> list[dict[str, Any
     return commits
 
 
+def published_pip_provenance(
+    api: GitHubApi,
+    pull: dict[str, Any],
+    files: list[dict[str, Any]],
+    commits: list[dict[str, Any]],
+    base_sha: str,
+    config: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Recognize the exact trusted lock-publisher chain without weakening bot provenance."""
+    if len(commits) != 2 or pull.get("commits") != 2:
+        return None
+    if not str((pull.get("head") or {}).get("ref") or "").startswith("dependabot/pip/"):
+        return None
+
+    # Imported lazily so dependency_recovery can continue importing this module's
+    # shared primitives without a module-import cycle.
+    from dependency_recovery import PUBLISHED_PIP_FILES, assess_recovery_scope
+
+    names = {str(file.get("filename") or "") for file in files}
+    if names != PUBLISHED_PIP_FILES:
+        return None
+
+    scope = assess_recovery_scope(api, pull, files, commits, base_sha, config)
+    if scope.get("provenanceState") != "dependabot-plus-trusted-lock-publisher":
+        return None
+    source_sha = str(scope.get("sourceCommit") or "")
+    source = api.get(f"/commits/{source_sha}") if re.fullmatch(r"[0-9a-f]{40}", source_sha) else None
+    reasons = list(scope.get("reasons") or [])
+    if not isinstance(source, dict):
+        reasons.append("unable to reload the exact Dependabot source commit")
+    return {
+        "eligible": not reasons,
+        "reasons": unique(reasons),
+        "commit": source if isinstance(source, dict) else None,
+        "state": "dependabot-plus-trusted-lock-publisher",
+    }
+
+
 def assess_pull(
     api: GitHubApi,
     number: int,
@@ -764,19 +799,44 @@ def assess_pull(
             else None,
         )
 
-    provenance = validate_provenance(pull, commits, base_sha, config)
+    provenance = (
+        published_pip_provenance(api, pull, files, commits, base_sha, config)
+        or validate_provenance(pull, commits, base_sha, config)
+    )
     metadata = (
         validate_signed_metadata(provenance["commit"])
         if provenance["commit"]
         else {
             "eligible": False,
-            "reasons": ["no single verified Dependabot commit"],
+            "reasons": ["no verified Dependabot source commit"],
             "metadata": [],
         }
     )
-    ecosystem = classify_ecosystem(files, config)
+    ecosystem = (
+        "pip"
+        if provenance.get("state") == "dependabot-plus-trusted-lock-publisher"
+        else classify_ecosystem(files, config)
+    )
 
-    if ecosystem == "pip":
+    if ecosystem == "pip" and provenance.get("state") == "dependabot-plus-trusted-lock-publisher":
+        semantic = {
+            "eligible": metadata["eligible"],
+            "reasons": (
+                []
+                if metadata["eligible"]
+                else ["trusted lock-publisher chain has invalid Dependabot source metadata"]
+            ),
+            "changes": [
+                {
+                    "ecosystem": "pip",
+                    "name": "requirements.txt + interpreter hash locks",
+                    "from": "canonical Dependabot source",
+                    "to": "verified trusted lock-publisher head",
+                    "risk": "exact-subject-qualified",
+                }
+            ],
+        }
+    elif ecosystem == "pip":
         semantic = validate_pip_manual(config)
     elif ecosystem == "github-actions" and provenance["eligible"] and metadata["eligible"]:
         base_ref = base_sha
@@ -901,10 +961,11 @@ def render_comment(
         [
             "",
             "> Safety invariant: privileged governance executes only trusted default-branch code, "
-            "requires an untouched GitHub-signed Dependabot commit directly on current main, proves "
-            "exact workflow identities and stable gates for the exact head, never regenerates Python "
-            "locks inside a dependency PR, and never autonomously merges major, downgrade, stale-base, "
-            "aged-out, control-plane, or semantically ambiguous changes.",
+            "requires a canonical GitHub-signed Dependabot source directly on current main and, for "
+            "pip, an exact verified trusted lock-publisher child commit. It proves exact workflow "
+            "identities and stable gates for the exact head; stale published pip chains are recreated "
+            "rather than rewritten, and major, downgrade, aged-out, control-plane, or semantically "
+            "ambiguous changes remain fail-closed.",
             "",
         ]
     )
@@ -1026,7 +1087,9 @@ def request_dependabot_refresh(
     assert owner_api is not None
     number = int(assessment.pull["number"])
     head_sha = str((assessment.pull.get("head") or {}).get("sha") or "")
-    marker = f"{OWNER_REFRESH_MARKER}{head_sha}:{assessment.base_sha}:rebase -->"
+    published_pip = assessment.provenance.get("state") == "dependabot-plus-trusted-lock-publisher"
+    command = "recreate" if published_pip else "rebase"
+    marker = f"{OWNER_REFRESH_MARKER}{head_sha}:{assessment.base_sha}:{command} -->"
     comments = owner_api.paginate(f"/issues/{number}/comments")
     if any(
         marker in str(comment.get("body") or "")
@@ -1038,11 +1101,19 @@ def request_dependabot_refresh(
     owner_api.post(
         f"/issues/{number}/comments",
         {"body": (
-            "@dependabot rebase\n\n"
+            f"@dependabot {command}\n\n"
             f"{marker}\n"
-            "Requested by the configured push-capable repository owner because the exact "
-            "Dependabot source commit is no longer parented on current main. Qualification "
-            "restarts on the new exact head; no merge or security gate is bypassed."
+            + (
+                "Requested by the configured push-capable repository owner because this published "
+                "pip PR is stale. Recreate removes the derived lock-publisher commit so Dependabot "
+                "can regenerate a canonical source directly on current main; the trusted publisher "
+                "must then regenerate all interpreter locks before qualification restarts."
+                if published_pip
+                else
+                "Requested by the configured push-capable repository owner because the exact "
+                "Dependabot source commit is no longer parented on current main. Qualification "
+                "restarts on the new exact head; no merge or security gate is bypassed."
+            )
         )},
     )
     return True
