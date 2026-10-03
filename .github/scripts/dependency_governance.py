@@ -1378,20 +1378,25 @@ def wait_for_exact_head_qualification_dispatches(
 
     current = assessment
     for attempt in range(poll_attempts):
-        qualification = current.qualification or {}
-        if qualification.get("allSuccess") is True:
-            return current
-
         current_head = str((current.pull.get("head") or {}).get("sha") or "")
-        still_exact_subject = (
+        exact_subject_unchanged = (
             current.pull.get("state") == "open"
             and current_head == original_head
             and current.base_sha == original_base
-            and current.provenance.get("eligible") is True
+        )
+        if not exact_subject_unchanged:
+            return assessment
+
+        still_policy_eligible = (
+            current.provenance.get("eligible") is True
             and current.metadata.get("eligible") is True
             and current.semantic.get("eligible") is True
         )
-        if not still_exact_subject:
+        if not still_policy_eligible:
+            return current
+
+        qualification = current.qualification or {}
+        if qualification.get("allSuccess") is True:
             return current
         if attempt + 1 >= poll_attempts:
             break
