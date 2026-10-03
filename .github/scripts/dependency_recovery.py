@@ -484,7 +484,11 @@ def assess_recovery_scope(
     source_provenance = validate_provenance(source_pull, [source], base_sha, config)
     if not source_provenance.get("eligible"):
         reasons.extend(source_provenance.get("reasons") or [])
-    source_metadata = validate_signed_metadata(source if source_provenance.get("eligible") else None)
+    # Metadata integrity is independent of base freshness. A stale-but-otherwise
+    # canonical source must retain its signed Dependabot metadata so the privileged
+    # controller can distinguish "recreate this trusted published chain" from a
+    # malformed/spoofed chain. Provenance blockers remain authoritative below.
+    source_metadata = validate_signed_metadata(source)
     if not source_metadata.get("eligible"):
         reasons.extend(source_metadata.get("reasons") or [])
     source_files = {str(file.get("filename") or "") for file in (source.get("files") or [])}

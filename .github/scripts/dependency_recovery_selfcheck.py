@@ -360,7 +360,12 @@ class RecoverySelfCheck(unittest.TestCase):
             [fixture["source"], fixture["publisher"]], "d" * 40, GOVERNANCE,
         )
         self.assertFalse(scope["eligible"])
-        self.assertTrue(any("current base branch head" in reason for reason in scope["reasons"]))
+        self.assertEqual(
+            scope["reasons"],
+            ["PR is not rebased directly on the current base branch head"],
+        )
+        self.assertEqual(scope["provenanceState"], "dependabot-plus-trusted-lock-publisher")
+        self.assertEqual(scope["sourceCommit"], fixture["source_sha"])
 
     def test_auxiliary_transient_failure_reruns_only_before_publisher_commit(self) -> None:
         fixture = canonical_source()
