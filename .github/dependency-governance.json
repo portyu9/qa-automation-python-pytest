@@ -59,6 +59,10 @@
     ".github/scripts/dependency_recovery_selfcheck.py",
     ".github/scripts/dependency_lock_publisher.py",
     ".github/scripts/dependency_lock_publisher_selfcheck.py",
+    ".github/scripts/validate_codeql_sarif.py",
+    ".github/scripts/validate_codeql_sarif_selfcheck.py",
+    ".github/scripts/validate_security_stack.py",
+    ".github/scripts/validate_security_evidence.py",
     ".github/dependabot.yml"
   ],
   "ecosystems": {
