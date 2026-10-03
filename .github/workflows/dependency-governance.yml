@@ -1,6 +1,8 @@
 name: dependency-governance
 
 on:
+  push:
+    branches: [main]
   pull_request:
     paths:
       - '.github/dependabot.yml'
