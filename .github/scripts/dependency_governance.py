@@ -967,9 +967,9 @@ def render_comment(
             "> Safety invariant: privileged governance executes only trusted default-branch code, "
             "requires a canonical GitHub-signed Dependabot source directly on current main and, for "
             "pip, an exact verified trusted lock-publisher child commit. It proves exact workflow "
-            "identities and stable gates for the exact head; stale published pip chains are recreated "
-            "rather than rewritten, and major, downgrade, aged-out, control-plane, or semantically "
-            "ambiguous changes remain fail-closed.",
+            "identities and stable gates for the exact head; privileged governance never regenerates Python locks "
+            "itself, stale published pip chains are recreated rather than rewritten, and major, downgrade, "
+            "aged-out, control-plane, or semantically ambiguous changes remain fail-closed.",
             "",
         ]
     )
