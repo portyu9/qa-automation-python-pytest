@@ -29,6 +29,9 @@ ACTION_LINE = re.compile(
 POSITIVE_INT = re.compile(r"^[1-9]\d*$")
 QUALIFICATION_POLL_ATTEMPTS = 36
 QUALIFICATION_POLL_INTERVAL_SECONDS = 5.0
+PUBLISHED_PIP_CONSUMED_PULL_WORKFLOW_PATHS = frozenset(
+    {".github/workflows/dependency-locks.yml"}
+)
 _QUALIFICATION_WAIT_STATES = frozenset(
     {
         "requested",
@@ -683,7 +686,11 @@ def select_qualification_run(
 
 
 def qualification_for_head(
-    api: GitHubApi, pull: dict[str, Any], config: dict[str, Any]
+    api: GitHubApi,
+    pull: dict[str, Any],
+    config: dict[str, Any],
+    *,
+    consumed_action_required_pull_paths: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     head_sha = (pull.get("head") or {}).get("sha")
     query = urllib.parse.urlencode({"head_sha": head_sha})
@@ -766,9 +773,9 @@ def qualification_for_head(
     for identity, run in latest_by_identity.items():
         if run.get("status") != "completed":
             all_success = False
-        elif (
-            run.get("conclusion") == "action_required"
-            and identity in selected_dispatch_paths
+        elif run.get("conclusion") == "action_required" and (
+            identity in selected_dispatch_paths
+            or identity in consumed_action_required_pull_paths
         ):
             continue
         elif run.get("conclusion") not in SAFE_TERMINAL_CONCLUSIONS:
@@ -965,7 +972,18 @@ def assess_pull(
     qualification = None
     if include_qualification:
         if provenance["eligible"] and metadata["eligible"] and semantic["eligible"]:
-            qualification = qualification_for_head(api, pull, config)
+            consumed_action_required_pull_paths = (
+                PUBLISHED_PIP_CONSUMED_PULL_WORKFLOW_PATHS
+                if ecosystem == "pip"
+                and provenance.get("state") == "dependabot-plus-trusted-lock-publisher"
+                else frozenset()
+            )
+            qualification = qualification_for_head(
+                api,
+                pull,
+                config,
+                consumed_action_required_pull_paths=consumed_action_required_pull_paths,
+            )
         else:
             qualification = {
                 "allSuccess": False,
