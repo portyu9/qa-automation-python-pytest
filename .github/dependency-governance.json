@@ -32,7 +32,11 @@
     {
       "workflow": "security",
       "gate": "security-gate",
-      "file": "security.yml"
+      "file": "security.yml",
+      "qualificationInputs": {
+        "governance-base-sha": "baseSha",
+        "governance-head-sha": "headSha"
+      }
     },
     {
       "workflow": "docs",
@@ -83,5 +87,7 @@
   },
   "ownerApprovalRequired": true,
   "ownerApprovalLogin": "portyu9",
-  "ownerApprovalUserId": 35150859
+  "ownerApprovalUserId": 35150859,
+  "trustedWorkflowDispatchActorLogin": "github-actions[bot]",
+  "trustedWorkflowDispatchActorUserId": 41898282
 }

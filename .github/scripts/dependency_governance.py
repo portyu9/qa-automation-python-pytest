@@ -86,6 +86,10 @@ def validate_config(config: dict[str, Any]) -> list[str]:
         errors.append("botLogin must be dependabot[bot]")
     if not isinstance(config.get("botUserId"), int) or config["botUserId"] <= 0:
         errors.append("botUserId must be a positive integer")
+    if config.get("trustedWorkflowDispatchActorLogin") != "github-actions[bot]":
+        errors.append("trustedWorkflowDispatchActorLogin must be github-actions[bot]")
+    if config.get("trustedWorkflowDispatchActorUserId") != 41898282:
+        errors.append("trustedWorkflowDispatchActorUserId must be the GitHub Actions bot identity")
     for key in (
         "botAuthorEmail",
         "trustedCommitterLogin",
@@ -138,6 +142,16 @@ def validate_config(config: dict[str, Any]) -> list[str]:
                 continue
             if "/" in filename or not re.fullmatch(r"[A-Za-z0-9._-]+\.ya?ml", filename):
                 errors.append(f"workflow file {filename} must be a workflow basename")
+            qualification_inputs = item.get("qualificationInputs")
+            expected_inputs = (
+                {"governance-base-sha": "baseSha", "governance-head-sha": "headSha"}
+                if filename == "security.yml"
+                else None
+            )
+            if qualification_inputs != expected_inputs:
+                errors.append(
+                    f"workflow {filename} qualificationInputs must be {expected_inputs!r}"
+                )
             if workflow in names:
                 errors.append(f"duplicate workflow {workflow}")
             if gate in gates:
@@ -580,10 +594,21 @@ def validate_pip_manual(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def workflow_identity_matches(
+def _workflow_subject_identity_matches(
     run: dict[str, Any], pull: dict[str, Any], requirement: dict[str, str]
 ) -> bool:
     expected_path = f".github/workflows/{requirement['file']}"
+    return (
+        run.get("name") == requirement["workflow"]
+        and run.get("path") == expected_path
+        and run.get("head_sha") == (pull.get("head") or {}).get("sha")
+        and run.get("head_branch") == (pull.get("head") or {}).get("ref")
+    )
+
+
+def workflow_identity_matches(
+    run: dict[str, Any], pull: dict[str, Any], requirement: dict[str, str]
+) -> bool:
     associations = run.get("pull_requests")
     association_matches = (
         not isinstance(associations, list)
@@ -591,18 +616,51 @@ def workflow_identity_matches(
         or any(item.get("number") == pull.get("number") for item in associations)
     )
     return (
-        run.get("name") == requirement["workflow"]
-        and run.get("path") == expected_path
+        _workflow_subject_identity_matches(run, pull, requirement)
         and run.get("event") == "pull_request"
-        and run.get("head_sha") == (pull.get("head") or {}).get("sha")
-        and run.get("head_branch") == (pull.get("head") or {}).get("ref")
         and association_matches
     )
 
 
+def trusted_dispatch_identity_matches(
+    run: dict[str, Any],
+    pull: dict[str, Any],
+    requirement: dict[str, str],
+    config: dict[str, Any],
+) -> bool:
+    actor = run.get("actor") or {}
+    triggering_actor = run.get("triggering_actor") or {}
+    expected_login = config["trustedWorkflowDispatchActorLogin"]
+    expected_id = config["trustedWorkflowDispatchActorUserId"]
+    return (
+        _workflow_subject_identity_matches(run, pull, requirement)
+        and run.get("event") == "workflow_dispatch"
+        and actor.get("login") == expected_login
+        and actor.get("id") == expected_id
+        and triggering_actor.get("login") == expected_login
+        and triggering_actor.get("id") == expected_id
+    )
+
+
 def select_qualification_run(
-    runs: list[dict[str, Any]], pull: dict[str, Any], requirement: dict[str, str]
+    runs: list[dict[str, Any]],
+    pull: dict[str, Any],
+    requirement: dict[str, str],
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    if config is not None:
+        dispatches = [
+            run
+            for run in runs
+            if trusted_dispatch_identity_matches(run, pull, requirement, config)
+        ]
+        dispatches.sort(
+            key=lambda run: str(run.get("updated_at") or run.get("created_at") or ""),
+            reverse=True,
+        )
+        if dispatches:
+            return dispatches[0]
+
     matches = [run for run in runs if workflow_identity_matches(run, pull, requirement)]
     matches.sort(
         key=lambda run: str(run.get("updated_at") or run.get("created_at") or ""),
@@ -615,22 +673,30 @@ def qualification_for_head(
     api: GitHubApi, pull: dict[str, Any], config: dict[str, Any]
 ) -> dict[str, Any]:
     head_sha = (pull.get("head") or {}).get("sha")
-    query = urllib.parse.urlencode({"head_sha": head_sha, "event": "pull_request"})
+    query = urllib.parse.urlencode({"head_sha": head_sha})
     runs = api.paginate(f"/actions/runs?{query}", "workflow_runs")
     qualifications: list[dict[str, Any]] = []
+    selected_dispatch_paths: set[str] = set()
     any_failed = False
     all_success = True
 
     for requirement in config["requiredWorkflows"]:
-        run = select_qualification_run(runs, pull, requirement)
+        run = select_qualification_run(runs, pull, requirement, config)
         if not run:
             all_success = False
             qualifications.append({**requirement, "state": "missing", "runId": None})
             continue
+        if run.get("event") == "workflow_dispatch":
+            selected_dispatch_paths.add(str(run.get("path") or ""))
         if run.get("status") != "completed":
             all_success = False
             qualifications.append(
-                {**requirement, "state": str(run.get("status") or "pending"), "runId": run.get("id")}
+                {
+                    **requirement,
+                    "state": str(run.get("status") or "pending"),
+                    "runId": run.get("id"),
+                    "source": run.get("event"),
+                }
             )
             continue
         if run.get("conclusion") != "success":
@@ -641,6 +707,7 @@ def qualification_for_head(
                     **requirement,
                     "state": f"workflow-{run.get('conclusion') or 'unknown'}",
                     "runId": run.get("id"),
+                    "source": run.get("event"),
                 }
             )
             continue
@@ -661,24 +728,36 @@ def qualification_for_head(
                 any_failed = True
             else:
                 state = "success"
-        qualifications.append({**requirement, "state": state, "runId": run.get("id")})
+        qualifications.append(
+            {
+                **requirement,
+                "state": state,
+                "runId": run.get("id"),
+                "source": run.get("event"),
+            }
+        )
 
-    exact_runs = [
+    exact_pull_runs = [
         run
         for run in runs
         if run.get("head_sha") == head_sha and run.get("event") == "pull_request"
     ]
-    exact_runs.sort(
+    exact_pull_runs.sort(
         key=lambda run: str(run.get("updated_at") or run.get("created_at") or ""),
         reverse=True,
     )
     latest_by_identity: dict[str, dict[str, Any]] = {}
-    for run in exact_runs:
+    for run in exact_pull_runs:
         identity = str(run.get("path") or run.get("name") or run.get("id"))
         latest_by_identity.setdefault(identity, run)
-    for run in latest_by_identity.values():
+    for identity, run in latest_by_identity.items():
         if run.get("status") != "completed":
             all_success = False
+        elif (
+            run.get("conclusion") == "action_required"
+            and identity in selected_dispatch_paths
+        ):
+            continue
         elif run.get("conclusion") not in SAFE_TERMINAL_CONCLUSIONS:
             all_success = False
             any_failed = True
@@ -689,7 +768,6 @@ def qualification_for_head(
         "qualifications": qualifications,
         "runCount": len(runs),
     }
-
 
 def get_current_base_sha(api: GitHubApi, branch: str) -> str:
     payload = api.get(f"/git/ref/heads/{urllib.parse.quote(branch, safe='')}")
@@ -1123,6 +1201,134 @@ def request_dependabot_refresh(
     return True
 
 
+
+def _qualification_dispatch_payload(
+    assessment: Assessment,
+    requirement: dict[str, Any],
+) -> dict[str, Any]:
+    head = assessment.pull.get("head") or {}
+    head_branch = str(head.get("ref") or "")
+    head_sha = str(head.get("sha") or "")
+    if not head_branch or not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+        raise GovernanceError("cannot dispatch qualification without an exact pull-request head")
+    payload: dict[str, Any] = {"ref": head_branch}
+    configured_inputs = requirement.get("qualificationInputs")
+    if configured_inputs:
+        values: dict[str, str] = {}
+        for input_name, source in configured_inputs.items():
+            if source == "baseSha":
+                values[input_name] = assessment.base_sha
+            elif source == "headSha":
+                values[input_name] = head_sha
+            else:
+                raise GovernanceError(
+                    f"unsupported qualification dispatch input source {source!r}"
+                )
+        payload["inputs"] = values
+    return payload
+
+
+def request_exact_head_qualification_dispatches(
+    api: GitHubApi,
+    assessment: Assessment,
+    config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    eligible = (
+        assessment.pull.get("state") == "open"
+        and assessment.provenance["eligible"]
+        and assessment.metadata["eligible"]
+        and assessment.semantic["eligible"]
+    )
+    if not eligible:
+        return []
+
+    head = assessment.pull.get("head") or {}
+    head_branch = str(head.get("ref") or "")
+    head_sha = str(head.get("sha") or "")
+    if not head_branch or not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+        raise GovernanceError("eligible pull request has no exact head branch/SHA")
+
+    ref_payload = api.get(
+        f"/git/ref/heads/{urllib.parse.quote(head_branch, safe='')}"
+    )
+    live_head = ((ref_payload or {}).get("object") or {}).get("sha")
+    if live_head != head_sha:
+        raise GovernanceError(
+            "pull-request head moved before exact-head qualification dispatch"
+        )
+
+    query = urllib.parse.urlencode({"head_sha": head_sha})
+    runs = api.paginate(f"/actions/runs?{query}", "workflow_runs")
+    outcomes: list[dict[str, Any]] = []
+
+    for requirement in config["requiredWorkflows"]:
+        trusted_dispatches = [
+            run
+            for run in runs
+            if trusted_dispatch_identity_matches(
+                run, assessment.pull, requirement, config
+            )
+        ]
+        trusted_dispatches.sort(
+            key=lambda run: str(run.get("updated_at") or run.get("created_at") or ""),
+            reverse=True,
+        )
+        if trusted_dispatches:
+            existing = trusted_dispatches[0]
+            state = str(existing.get("status") or "unknown")
+            if state == "completed":
+                state = str(existing.get("conclusion") or "unknown")
+            outcomes.append(
+                {
+                    "workflow": requirement["workflow"],
+                    "file": requirement["file"],
+                    "state": f"existing-{state}",
+                    "runId": existing.get("id"),
+                }
+            )
+            continue
+
+        pull_runs = [
+            run
+            for run in runs
+            if workflow_identity_matches(run, assessment.pull, requirement)
+        ]
+        pull_runs.sort(
+            key=lambda run: str(run.get("updated_at") or run.get("created_at") or ""),
+            reverse=True,
+        )
+        pull_run = pull_runs[0] if pull_runs else None
+        should_dispatch = pull_run is None or (
+            pull_run.get("status") == "completed"
+            and pull_run.get("conclusion") == "action_required"
+        )
+        if not should_dispatch:
+            outcomes.append(
+                {
+                    "workflow": requirement["workflow"],
+                    "file": requirement["file"],
+                    "state": "not-needed",
+                    "runId": pull_run.get("id") if pull_run else None,
+                }
+            )
+            continue
+
+        payload = _qualification_dispatch_payload(assessment, requirement)
+        api.post(
+            f"/actions/workflows/{urllib.parse.quote(requirement['file'], safe='')}/dispatches",
+            payload,
+        )
+        outcomes.append(
+            {
+                "workflow": requirement["workflow"],
+                "file": requirement["file"],
+                "state": "requested",
+                "runId": None,
+            }
+        )
+    return outcomes
+
+
 def maybe_merge(
     api: GitHubApi,
     owner_api: GitHubApi | None,
@@ -1215,6 +1421,11 @@ def process_pull(
         return {"skipped": True, "reason": "not canonical Dependabot", "merged": False}
 
     request_dependabot_refresh(owner_api, assessment, config)
+    qualification_dispatches = request_exact_head_qualification_dispatches(
+        api, assessment, config
+    )
+    if qualification_dispatches:
+        assessment = assess_pull(api, number, config, include_qualification=True)
     merged, final_assessment, dispatches = maybe_merge(
         api, owner_api, assessment, config, allow_merge
     )
