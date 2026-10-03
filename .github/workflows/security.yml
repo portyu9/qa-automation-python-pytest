@@ -7,6 +7,15 @@ on:
   schedule:
     - cron: "23 6 * * 1"
   workflow_dispatch:
+    inputs:
+      governance-base-sha:
+        description: 'Trusted governance base SHA for exact-head dependency review'
+        required: false
+        type: string
+      governance-head-sha:
+        description: 'Trusted governance head SHA for exact-head dependency review'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -23,6 +32,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate trusted governance qualification subject
+        if: github.event_name == 'workflow_dispatch' && (inputs.governance-base-sha != '' || inputs.governance-head-sha != '')
+        shell: bash
+        env:
+          GOVERNANCE_BASE_SHA: ${{ inputs.governance-base-sha }}
+          GOVERNANCE_HEAD_SHA: ${{ inputs.governance-head-sha }}
+        run: |
+          set -euo pipefail
+          [[ "$GOVERNANCE_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GOVERNANCE_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GOVERNANCE_HEAD_SHA" == "$GITHUB_SHA" ]]
       - name: Validate immutable workflow dependencies and lock provenance
         run: |
           python .github/scripts/validate_workflow_pins.py
@@ -139,7 +159,7 @@ jobs:
   dependency-review:
     name: dependency-review
     needs: [supply-chain-policy]
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.governance-base-sha != '' && inputs.governance-head-sha != '')
     permissions:
       contents: read
     runs-on: ubuntu-24.04
@@ -173,6 +193,8 @@ jobs:
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: high
+          base-ref: ${{ github.event.pull_request.base.sha || inputs.governance-base-sha }}
+          head-ref: ${{ github.event.pull_request.head.sha || inputs.governance-head-sha }}
       - name: Confirm fallback scope
         if: steps.dependency-graph.outputs.available != 'true'
         run: echo 'Dependency Review unavailable; attributed Trivy hash-lock scanning remains the independent dependency/configuration gate.'
@@ -190,6 +212,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
+          GOVERNANCE_QUALIFICATION: ${{ github.event_name == 'workflow_dispatch' && inputs.governance-base-sha != '' && inputs.governance-head-sha != '' }}
           SUPPLY_CHAIN_RESULT: ${{ needs.supply-chain-policy.result }}
           CODEQL_RESULT: ${{ needs.codeql.result }}
           TRIVY_RESULT: ${{ needs.trivy.result }}
@@ -198,12 +221,12 @@ jobs:
           set -euo pipefail
           [[ "$SUPPLY_CHAIN_RESULT" == "success" ]] || { echo "supply-chain-policy=$SUPPLY_CHAIN_RESULT"; exit 1; }
           [[ "$TRIVY_RESULT" == "success" ]] || { echo "trivy=$TRIVY_RESULT"; exit 1; }
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+          if [[ "$EVENT_NAME" == "pull_request" || "$GOVERNANCE_QUALIFICATION" == "true" ]]; then
             [[ "$DEPENDENCY_REVIEW_RESULT" == "success" ]] || { echo "dependency-review=$DEPENDENCY_REVIEW_RESULT"; exit 1; }
-            if [[ "$HEAD_REPOSITORY" == "$REPOSITORY" ]]; then
-              [[ "$CODEQL_RESULT" == "success" ]] || { echo "codeql=$CODEQL_RESULT"; exit 1; }
-            else
+            if [[ "$EVENT_NAME" == "pull_request" && "$HEAD_REPOSITORY" != "$REPOSITORY" ]]; then
               [[ "$CODEQL_RESULT" == "skipped" ]] || { echo "fork-codeql=$CODEQL_RESULT"; exit 1; }
+            else
+              [[ "$CODEQL_RESULT" == "success" ]] || { echo "codeql=$CODEQL_RESULT"; exit 1; }
             fi
           else
             [[ "$CODEQL_RESULT" == "success" ]] || { echo "codeql=$CODEQL_RESULT"; exit 1; }

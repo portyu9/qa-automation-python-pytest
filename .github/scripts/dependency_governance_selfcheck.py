@@ -19,7 +19,9 @@ from dependency_governance import (
     reconcile_independently,
     render_comment,
     request_dependabot_refresh,
+    request_exact_head_qualification_dispatches,
     select_qualification_run,
+    trusted_dispatch_identity_matches,
     validate_actions_semantic_change,
     validate_config,
     validate_pip_manual,
@@ -471,6 +473,154 @@ class DependencyGovernanceTests(unittest.TestCase):
         }
         self.assertEqual(select_qualification_run([newer_wrong, run], pull, requirement)["id"], 1)
 
+    def test_trusted_workflow_dispatch_is_exact_actor_and_subject_bound(self) -> None:
+        _, head, pull, _ = canonical_fixture()
+        requirement = CONFIG["requiredWorkflows"][0]
+        dispatch = {
+            "id": 2,
+            "name": requirement["workflow"],
+            "path": f".github/workflows/{requirement['file']}",
+            "event": "workflow_dispatch",
+            "head_sha": head,
+            "head_branch": pull["head"]["ref"],
+            "actor": {
+                "login": CONFIG["trustedWorkflowDispatchActorLogin"],
+                "id": CONFIG["trustedWorkflowDispatchActorUserId"],
+            },
+            "triggering_actor": {
+                "login": CONFIG["trustedWorkflowDispatchActorLogin"],
+                "id": CONFIG["trustedWorkflowDispatchActorUserId"],
+            },
+            "updated_at": "2026-09-02T11:00:00Z",
+        }
+        self.assertTrue(
+            trusted_dispatch_identity_matches(dispatch, pull, requirement, CONFIG)
+        )
+        for mutation in (
+            {"event": "push"},
+            {"head_sha": "c" * 40},
+            {"head_branch": "dependabot/other"},
+            {"actor": {"login": "portyu9", "id": CONFIG["ownerApprovalUserId"]}},
+            {
+                "triggering_actor": {
+                    "login": "portyu9",
+                    "id": CONFIG["ownerApprovalUserId"],
+                }
+            },
+        ):
+            self.assertFalse(
+                trusted_dispatch_identity_matches(
+                    {**dispatch, **mutation}, pull, requirement, CONFIG
+                )
+            )
+
+        pull_run = {
+            **dispatch,
+            "id": 1,
+            "event": "pull_request",
+            "actor": None,
+            "triggering_actor": None,
+            "pull_requests": [{"number": pull["number"]}],
+            "updated_at": "2026-09-02T10:00:00Z",
+        }
+        selected = select_qualification_run(
+            [pull_run, dispatch], pull, requirement, CONFIG
+        )
+        self.assertEqual(selected["id"], 2)
+
+    def test_action_required_runs_dispatch_exact_head_once_with_security_refs(self) -> None:
+        base, head, pull, commit = canonical_fixture()
+        assessment = Assessment(
+            pull=pull,
+            base_sha=base,
+            files=[{"filename": ".github/workflows/ci.yml"}],
+            ecosystem="github-actions",
+            provenance={"eligible": True, "reasons": [], "commit": commit},
+            metadata={"eligible": True, "reasons": [], "metadata": []},
+            semantic={"eligible": True, "reasons": [], "changes": []},
+            qualification={"allSuccess": False, "anyFailed": True, "qualifications": []},
+        )
+
+        class QualificationApi:
+            def __init__(self) -> None:
+                self.posts: list[tuple[str, dict]] = []
+                self.runs = []
+                for index, requirement in enumerate(CONFIG["requiredWorkflows"], start=1):
+                    self.runs.append(
+                        {
+                            "id": index,
+                            "name": requirement["workflow"],
+                            "path": f".github/workflows/{requirement['file']}",
+                            "event": "pull_request",
+                            "head_sha": head,
+                            "head_branch": pull["head"]["ref"],
+                            "pull_requests": [{"number": pull["number"]}],
+                            "status": "completed",
+                            "conclusion": "action_required",
+                            "updated_at": f"2026-09-02T10:00:0{index}Z",
+                        }
+                    )
+
+            def get(self, path: str) -> dict:
+                self.assert_ref_path = path
+                return {"object": {"sha": head}}
+
+            def paginate(self, path: str, selector: str | None = None) -> list[dict]:
+                self.assert_runs_path = path
+                self.assert_selector = selector
+                return list(self.runs)
+
+            def post(self, path: str, payload: dict) -> None:
+                self.posts.append((path, payload))
+
+        api = QualificationApi()
+        outcomes = request_exact_head_qualification_dispatches(
+            api, assessment, CONFIG
+        )
+        self.assertEqual(len(api.posts), len(CONFIG["requiredWorkflows"]))
+        self.assertTrue(all(item["state"] == "requested" for item in outcomes))
+        security_post = next(
+            payload
+            for path, payload in api.posts
+            if path.endswith("/security.yml/dispatches")
+        )
+        self.assertEqual(security_post["ref"], pull["head"]["ref"])
+        self.assertEqual(
+            security_post["inputs"],
+            {"governance-base-sha": base, "governance-head-sha": head},
+        )
+
+        trusted_existing = []
+        for index, requirement in enumerate(CONFIG["requiredWorkflows"], start=100):
+            trusted_existing.append(
+                {
+                    "id": index,
+                    "name": requirement["workflow"],
+                    "path": f".github/workflows/{requirement['file']}",
+                    "event": "workflow_dispatch",
+                    "head_sha": head,
+                    "head_branch": pull["head"]["ref"],
+                    "actor": {
+                        "login": CONFIG["trustedWorkflowDispatchActorLogin"],
+                        "id": CONFIG["trustedWorkflowDispatchActorUserId"],
+                    },
+                    "triggering_actor": {
+                        "login": CONFIG["trustedWorkflowDispatchActorLogin"],
+                        "id": CONFIG["trustedWorkflowDispatchActorUserId"],
+                    },
+                    "status": "queued",
+                    "conclusion": None,
+                    "updated_at": f"2026-09-02T11:00:{index - 100:02d}Z",
+                }
+            )
+        api.runs.extend(trusted_existing)
+        api.posts.clear()
+        outcomes = request_exact_head_qualification_dispatches(
+            api, assessment, CONFIG
+        )
+        self.assertEqual(api.posts, [])
+        self.assertTrue(all(item["state"] == "existing-queued" for item in outcomes))
+
     def test_manual_dispatch_input_is_strict(self) -> None:
         self.assertEqual(
             event_pull_number({"inputs": {"pr-number": "54"}}, "workflow_dispatch"), 54
@@ -534,6 +684,19 @@ class DependencyGovernanceTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("DEPENDABOT_OWNER_TOKEN: ${{ secrets.DEPENDABOT_OWNER_TOKEN }}", workflow)
+        security = (ROOT / ".github" / "workflows" / "security.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("governance-base-sha:", security)
+        self.assertIn("governance-head-sha:", security)
+        self.assertIn(
+            "base-ref: ${{ github.event.pull_request.base.sha || inputs.governance-base-sha }}",
+            security,
+        )
+        self.assertIn(
+            "head-ref: ${{ github.event.pull_request.head.sha || inputs.governance-head-sha }}",
+            security,
+        )
 
 
 if __name__ == "__main__":
