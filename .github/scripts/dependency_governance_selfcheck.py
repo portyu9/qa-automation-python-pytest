@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from dependency_governance import (
     validate_pip_manual,
     validate_provenance,
     validate_signed_metadata,
+    wait_for_exact_head_qualification_dispatches,
     workflow_identity_matches,
 )
 
@@ -620,6 +622,120 @@ class DependencyGovernanceTests(unittest.TestCase):
         )
         self.assertEqual(api.posts, [])
         self.assertTrue(all(item["state"] == "existing-queued" for item in outcomes))
+
+    def test_requested_dispatches_are_waited_for_until_exact_head_success(self) -> None:
+        base, head, pull, commit = canonical_fixture()
+        pending = Assessment(
+            pull=pull,
+            base_sha=base,
+            files=[{"filename": "requirements.txt"}],
+            ecosystem="pip",
+            provenance={"eligible": True, "reasons": [], "commit": commit},
+            metadata={"eligible": True, "reasons": [], "metadata": []},
+            semantic={"eligible": True, "reasons": [], "changes": []},
+            qualification={"allSuccess": False, "anyFailed": True, "qualifications": []},
+        )
+        still_pending = Assessment(
+            pull=pull,
+            base_sha=base,
+            files=pending.files,
+            ecosystem=pending.ecosystem,
+            provenance=pending.provenance,
+            metadata=pending.metadata,
+            semantic=pending.semantic,
+            qualification={"allSuccess": False, "anyFailed": False, "qualifications": []},
+        )
+        success = Assessment(
+            pull=pull,
+            base_sha=base,
+            files=pending.files,
+            ecosystem=pending.ecosystem,
+            provenance=pending.provenance,
+            metadata=pending.metadata,
+            semantic=pending.semantic,
+            qualification={"allSuccess": True, "anyFailed": False, "qualifications": []},
+        )
+        sleeps: list[float] = []
+        with patch(
+            "dependency_governance.assess_pull",
+            side_effect=[still_pending, success],
+        ) as reassess:
+            result = wait_for_exact_head_qualification_dispatches(
+                object(),
+                pending,
+                CONFIG,
+                [{"file": "ci.yml", "state": "requested"}],
+                sleep_fn=sleeps.append,
+                poll_attempts=3,
+                poll_interval_seconds=0.25,
+            )
+        self.assertIs(result, success)
+        self.assertEqual(sleeps, [0.25, 0.25])
+        self.assertEqual(reassess.call_count, 2)
+        self.assertEqual((result.pull["head"] or {})["sha"], head)
+
+    def test_dispatch_wait_fails_closed_on_subject_drift(self) -> None:
+        base, _, pull, commit = canonical_fixture()
+        pending = Assessment(
+            pull=pull,
+            base_sha=base,
+            files=[{"filename": "requirements.txt"}],
+            ecosystem="pip",
+            provenance={"eligible": True, "reasons": [], "commit": commit},
+            metadata={"eligible": True, "reasons": [], "metadata": []},
+            semantic={"eligible": True, "reasons": [], "changes": []},
+            qualification={"allSuccess": False, "anyFailed": False, "qualifications": []},
+        )
+        moved_pull = {**pull, "head": {**pull["head"], "sha": "c" * 40}}
+        moved = Assessment(
+            pull=moved_pull,
+            base_sha=base,
+            files=pending.files,
+            ecosystem=pending.ecosystem,
+            provenance=pending.provenance,
+            metadata=pending.metadata,
+            semantic=pending.semantic,
+            qualification={"allSuccess": True, "anyFailed": False, "qualifications": []},
+        )
+        sleeps: list[float] = []
+        with patch("dependency_governance.assess_pull", return_value=moved) as reassess:
+            result = wait_for_exact_head_qualification_dispatches(
+                object(),
+                pending,
+                CONFIG,
+                [{"file": "ci.yml", "state": "requested"}],
+                sleep_fn=sleeps.append,
+                poll_attempts=4,
+                poll_interval_seconds=0.1,
+            )
+        self.assertIs(result, moved)
+        self.assertEqual(sleeps, [0.1])
+        self.assertEqual(reassess.call_count, 1)
+
+    def test_completed_dispatches_do_not_add_wait_latency(self) -> None:
+        base, _, pull, commit = canonical_fixture()
+        assessment = Assessment(
+            pull=pull,
+            base_sha=base,
+            files=[{"filename": "requirements.txt"}],
+            ecosystem="pip",
+            provenance={"eligible": True, "reasons": [], "commit": commit},
+            metadata={"eligible": True, "reasons": [], "metadata": []},
+            semantic={"eligible": True, "reasons": [], "changes": []},
+            qualification={"allSuccess": True, "anyFailed": False, "qualifications": []},
+        )
+        sleeps: list[float] = []
+        result = wait_for_exact_head_qualification_dispatches(
+            object(),
+            assessment,
+            CONFIG,
+            [{"file": "ci.yml", "state": "existing-success"}],
+            sleep_fn=sleeps.append,
+            poll_attempts=1,
+            poll_interval_seconds=0,
+        )
+        self.assertIs(result, assessment)
+        self.assertEqual(sleeps, [])
 
     def test_manual_dispatch_input_is_strict(self) -> None:
         self.assertEqual(
