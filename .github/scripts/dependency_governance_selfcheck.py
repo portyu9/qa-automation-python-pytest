@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import unittest
-from unittest.mock import patch
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from dependency_governance import (
     ACTION_LINE,
@@ -708,7 +708,7 @@ class DependencyGovernanceTests(unittest.TestCase):
                 poll_attempts=4,
                 poll_interval_seconds=0.1,
             )
-        self.assertIs(result, moved)
+        self.assertIs(result, pending)
         self.assertEqual(sleeps, [0.1])
         self.assertEqual(reassess.call_count, 1)
 
