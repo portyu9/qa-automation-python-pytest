@@ -14,7 +14,7 @@ KNOWN_CODE_SUFFIXES = set(CODEQL_BY_SUFFIX) | {
     ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".cs", ".java",
     ".kt", ".kts", ".rb", ".rs", ".swift", ".php", ".scala", ".lua", ".ps1",
 }
-SHELL_SHEBANG = re.compile(r"^#!.*\\b(?:ba|da|k|z)?sh\\b")
+SHELL_SHEBANG = re.compile(r"^#!.*\b(?:ba|da|k|z)?sh\b")
 
 
 def tracked_files() -> list[Path]:
@@ -42,7 +42,7 @@ def main() -> int:
 
         if path.is_file():
             try:
-                first_line = path.open("r", encoding="utf-8").readline().rstrip("\\n")
+                first_line = path.open("r", encoding="utf-8").readline().rstrip("\n")
             except UnicodeDecodeError:
                 first_line = ""
             if SHELL_SHEBANG.search(first_line):
