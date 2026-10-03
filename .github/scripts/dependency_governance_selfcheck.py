@@ -341,6 +341,26 @@ class DependencyGovernanceTests(unittest.TestCase):
         )
         self.assertTrue(result["eligible"], result["reasons"])
 
+    def test_grouped_action_metadata_may_lag_exact_immutable_pin(self) -> None:
+        file = ".github/workflows/security.yml"
+        before = (
+            "steps:\n"
+            "  - name: Initialize CodeQL\n"
+            "    uses: github/codeql-action/init@" + "a" * 40 + " # v4.38.0\n"
+        )
+        after = before.replace("a" * 40 + " # v4.38.0", "b" * 40 + " # v4.38.2")
+        metadata = [
+            {
+                "name": "github/codeql-action/init",
+                "version": "4.38.1",
+                "updateType": "version-update:semver-patch",
+            }
+        ]
+        result = validate_actions_semantic_change(
+            [{"filename": file}], {file: before}, {file: after}, metadata, CONFIG
+        )
+        self.assertTrue(result["eligible"], result["reasons"])
+
     def test_owner_identity_comment_approval_and_refresh_are_exact_head_bound(self) -> None:
         base, head, pull, commit = canonical_fixture()
         assessment = Assessment(
@@ -378,6 +398,35 @@ class DependencyGovernanceTests(unittest.TestCase):
         self.assertIn("@dependabot rebase", refresh_owner.comments[0]["body"])
         self.assertTrue(request_dependabot_refresh(refresh_owner, stale, CONFIG))
         self.assertEqual(len(refresh_owner.comments), 1)
+
+        published = Assessment(
+            pull=pull,
+            base_sha="d" * 40,
+            files=[
+                {"filename": "requirements.txt"},
+                {"filename": "requirements-lock/python-3.11.txt"},
+                {"filename": "requirements-lock/python-3.12.txt"},
+                {"filename": "requirements-lock/python-3.13.txt"},
+                {"filename": "requirements-lock/python-3.14.txt"},
+                {"filename": "requirements-lock/manifest.json"},
+            ],
+            ecosystem="pip",
+            provenance={
+                "eligible": False,
+                "reasons": ["PR is not rebased directly on the current base branch head"],
+                "commit": commit,
+                "state": "dependabot-plus-trusted-lock-publisher",
+            },
+            metadata=assessment.metadata,
+            semantic={"eligible": True, "reasons": [], "changes": []},
+            qualification=assessment.qualification,
+        )
+        recreate_owner = OwnerApi(CONFIG["ownerApprovalLogin"], CONFIG["ownerApprovalUserId"])
+        self.assertTrue(request_dependabot_refresh(recreate_owner, published, CONFIG))
+        self.assertIn("@dependabot recreate", recreate_owner.comments[0]["body"])
+        self.assertIn("trusted publisher", recreate_owner.comments[0]["body"])
+        self.assertTrue(request_dependabot_refresh(recreate_owner, published, CONFIG))
+        self.assertEqual(len(recreate_owner.comments), 1)
 
     def test_version_comparison_treats_zero_minor_as_breaking_risk(self) -> None:
         self.assertEqual(compare_versions("7.0.1", "7.0.2"), "patch")
@@ -475,6 +524,7 @@ class DependencyGovernanceTests(unittest.TestCase):
         self.assertIn("pull_request_target:", workflow)
         self.assertIn("workflow_run:", workflow)
         self.assertIn("schedule:", workflow)
+        self.assertIn("cron: '17 * * * *'", workflow)
         self.assertIn("ref: ${{ github.event.repository.default_branch }}", workflow)
         self.assertIn("persist-credentials: false", workflow)
         self.assertNotRegex(workflow, r"ref:\s*\$\{\{\s*github\.event\.pull_request\.head")
