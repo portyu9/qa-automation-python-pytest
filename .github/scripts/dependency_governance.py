@@ -1521,7 +1521,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     allow_merge = os.environ.get("ALLOW_MERGE") == "true"
 
-    if event_name == "schedule":
+    if event_name in {"schedule", "push"}:
         pulls = api.paginate("/pulls?state=open")
         dependabot_pulls = [
             pull
@@ -1538,7 +1538,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"reconciled": len(results), "failed": failures}, indent=2))
         if failures:
             raise GovernanceError(
-                f"scheduled dependency governance failed for {len(failures)} PR(s)"
+                f"bulk dependency governance failed for {len(failures)} PR(s)"
             )
         return 0
 

@@ -671,6 +671,8 @@ class DependencyGovernanceTests(unittest.TestCase):
         workflow = (
             ROOT / ".github" / "workflows" / "dependency-governance.yml"
         ).read_text(encoding="utf-8")
+        self.assertIn("push:", workflow)
+        self.assertIn("branches: [main]", workflow)
         self.assertIn("pull_request_target:", workflow)
         self.assertIn("workflow_run:", workflow)
         self.assertIn("schedule:", workflow)
