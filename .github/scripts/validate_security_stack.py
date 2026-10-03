@@ -21,7 +21,7 @@ def tracked_files() -> list[Path]:
     result = subprocess.run(
         ["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True
     )
-    return [ROOT / item.decode("utf-8") for item in result.stdout.split(b"\\x00") if item]
+    return [ROOT / item.decode("utf-8") for item in result.stdout.split(b"\x00") if item]
 
 
 def main() -> int:
