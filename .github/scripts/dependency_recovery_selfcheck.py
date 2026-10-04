@@ -414,7 +414,7 @@ class RecoverySelfCheck(unittest.TestCase):
         self.assertGreater(len(ecosystems), 0)
         self.assertEqual(len(rebases), len(ecosystems))
         workflow = (ROOT / ".github" / "workflows" / "dependency-governance.yml").read_text(encoding="utf-8")
-        self.assertIn("workflows: [ci, extended, security, docs, dependency-locks]", workflow)
+        self.assertIn("workflows: [ci, extended, security, docs, dependency-locks, dependency-lock-publisher]", workflow)
         for path in (
             ".github/dependency-recovery.json",
             ".github/scripts/dependency_recovery.py",
