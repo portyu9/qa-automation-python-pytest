@@ -1888,7 +1888,7 @@ def reconcile_independently(
 def should_bulk_reconcile(
     event: dict[str, Any], event_name: str, config: dict[str, Any]
 ) -> bool:
-    if should_bulk_reconcile(event, event_name, config):
+    if event_name in {"schedule", "push"}:
         return True
     if event_name != "workflow_run":
         return False
@@ -1964,7 +1964,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     allow_merge = os.environ.get("ALLOW_MERGE") == "true"
 
-    if event_name in {"schedule", "push"}:
+    if should_bulk_reconcile(event, event_name, config):
         pulls = api.paginate("/pulls?state=open")
         dependabot_pulls = [
             pull
