@@ -63,11 +63,21 @@ def artifact_tree(root: Path) -> None:
 
 
 class FakeApi:
-    def __init__(self, *, ref_sha: str = HEAD) -> None:
+    def __init__(
+        self,
+        *,
+        ref_sha: str = HEAD,
+        post_failures: dict[str, list[int]] | None = None,
+        patch_failures: list[int] | None = None,
+        patch_applies_before_failure: bool = False,
+    ) -> None:
         self.ref_sha = ref_sha
         self.posts: list[tuple[str, dict]] = []
         self.patches: list[tuple[str, dict]] = []
         self.blob_index = 0
+        self.post_failures = {path: list(codes) for path, codes in (post_failures or {}).items()}
+        self.patch_failures = list(patch_failures or [])
+        self.patch_applies_before_failure = patch_applies_before_failure
 
     def get(self, path: str) -> dict:
         if path == f"/git/commits/{HEAD}":
@@ -78,6 +88,12 @@ class FakeApi:
 
     def post(self, path: str, payload: dict) -> dict:
         self.posts.append((path, payload))
+        failures = self.post_failures.get(path) or []
+        if failures:
+            status = failures.pop(0)
+            raise GovernanceError(
+                f"GitHub API POST https://api.github.com/repos/o/r{path} failed ({status}): Server Error"
+            )
         if path == "/git/blobs":
             self.blob_index += 1
             return {"sha": f"{self.blob_index:040x}"}
@@ -89,6 +105,14 @@ class FakeApi:
 
     def patch(self, path: str, payload: dict) -> dict:
         self.patches.append((path, payload))
+        if self.patch_failures:
+            status = self.patch_failures.pop(0)
+            if self.patch_applies_before_failure:
+                self.ref_sha = payload["sha"]
+            raise GovernanceError(
+                f"GitHub API PATCH https://api.github.com/repos/o/r{path} failed ({status}): Server Error"
+            )
+        self.ref_sha = payload["sha"]
         return {"object": {"sha": payload["sha"]}}
 
 
@@ -145,6 +169,56 @@ class DependencyLockPublisherTests(unittest.TestCase):
         self.assertEqual([entry["python"] for entry in manifest["locks"]], list(EXPECTED_PYTHONS))
         for entry in manifest["locks"]:
             self.assertEqual(entry["gitBlob"], git_blob_sha_bytes(locks[entry["python"]]))
+
+    def test_transient_git_object_server_error_retries_once(self) -> None:
+        locks = {version: lock_text(version).encode() for version in EXPECTED_PYTHONS}
+        manifest = build_manifest(b"pytest>=8,<9\nruff>=0.16,<1\n", locks)
+        api = FakeApi(post_failures={"/git/blobs": [502]})
+        commit = publish_locks(
+            api, pull=pull_fixture(), source_head=HEAD, locks=locks, manifest=manifest
+        )
+        self.assertEqual(commit, "e" * 40)
+        self.assertEqual(len([path for path, _ in api.posts if path == "/git/blobs"]), 6)
+        self.assertEqual(len(api.patches), 1)
+
+    def test_client_error_is_not_retried(self) -> None:
+        locks = {version: lock_text(version).encode() for version in EXPECTED_PYTHONS}
+        manifest = build_manifest(b"pytest>=8,<9\nruff>=0.16,<1\n", locks)
+        api = FakeApi(post_failures={"/git/blobs": [422]})
+        with self.assertRaisesRegex(GovernanceError, r"\(422\)"):
+            publish_locks(
+                api, pull=pull_fixture(), source_head=HEAD, locks=locks, manifest=manifest
+            )
+        self.assertEqual(len([path for path, _ in api.posts if path == "/git/blobs"]), 1)
+        self.assertEqual(api.patches, [])
+
+    def test_transient_ref_failure_is_rechecked_before_retry(self) -> None:
+        locks = {version: lock_text(version).encode() for version in EXPECTED_PYTHONS}
+        manifest = build_manifest(b"pytest>=8,<9\nruff>=0.16,<1\n", locks)
+
+        applied = FakeApi(patch_failures=[502], patch_applies_before_failure=True)
+        commit = publish_locks(
+            applied, pull=pull_fixture(), source_head=HEAD, locks=locks, manifest=manifest
+        )
+        self.assertEqual(commit, "e" * 40)
+        self.assertEqual(len(applied.patches), 1)
+        self.assertEqual(applied.ref_sha, "e" * 40)
+
+        not_applied = FakeApi(patch_failures=[502])
+        commit = publish_locks(
+            not_applied, pull=pull_fixture(), source_head=HEAD, locks=locks, manifest=manifest
+        )
+        self.assertEqual(commit, "e" * 40)
+        self.assertEqual(len(not_applied.patches), 2)
+        self.assertEqual(not_applied.ref_sha, "e" * 40)
+
+        blocked = FakeApi(patch_failures=[422])
+        with self.assertRaisesRegex(GovernanceError, r"\(422\)"):
+            publish_locks(
+                blocked, pull=pull_fixture(), source_head=HEAD, locks=locks, manifest=manifest
+            )
+        self.assertEqual(len(blocked.patches), 1)
+        self.assertEqual(blocked.ref_sha, HEAD)
 
     def test_atomic_publication_updates_only_after_exact_ref_recheck(self) -> None:
         locks = {version: lock_text(version).encode() for version in EXPECTED_PYTHONS}
