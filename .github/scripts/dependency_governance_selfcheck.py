@@ -20,6 +20,7 @@ from dependency_governance import (
     has_exact_owner_approval,
     parse_dependabot_metadata,
     parse_positive_integer,
+    published_pip_provenance,
     native_required_pull_qualification,
     qualification_for_head,
     reconcile_independently,
@@ -1021,6 +1022,73 @@ class DependencyGovernanceTests(unittest.TestCase):
         self.assertEqual(sleeps, [0.25, 0.25])
         self.assertEqual(reassess.call_count, 2)
         self.assertEqual((result.pull["head"] or {})["sha"], head)
+
+    def test_published_pip_provenance_accepts_only_safe_collapsed_pr_paths(self) -> None:
+        base, source_sha, pull, source = canonical_fixture()
+        publisher_sha = "c" * 40
+        pull = {
+            **pull,
+            "commits": 2,
+            "changed_files": 2,
+            "head": {
+                **pull["head"],
+                "ref": "dependabot/pip/pytest-rerunfailures",
+                "sha": publisher_sha,
+            },
+        }
+        commits = [source, {"sha": publisher_sha}]
+
+        class PublishedApi:
+            def get(self, path: str) -> dict:
+                if path == f"/commits/{source_sha}":
+                    return source
+                raise AssertionError(path)
+
+        scope = {
+            "eligible": True,
+            "reasons": [],
+            "provenanceState": "dependabot-plus-trusted-lock-publisher",
+            "sourceCommit": source_sha,
+        }
+        with patch("dependency_recovery.assess_recovery_scope", return_value=scope):
+            accepted = published_pip_provenance(
+                PublishedApi(),
+                pull,
+                [
+                    {"filename": "requirements.txt"},
+                    {"filename": "requirements-lock/manifest.json"},
+                ],
+                commits,
+                base,
+                CONFIG,
+            )
+            self.assertIsNotNone(accepted)
+            assert accepted is not None
+            self.assertTrue(accepted["eligible"], accepted["reasons"])
+
+            self.assertIsNone(
+                published_pip_provenance(
+                    PublishedApi(),
+                    pull,
+                    [{"filename": "requirements-lock/manifest.json"}],
+                    commits,
+                    base,
+                    CONFIG,
+                )
+            )
+            self.assertIsNone(
+                published_pip_provenance(
+                    PublishedApi(),
+                    pull,
+                    [
+                        {"filename": "requirements.txt"},
+                        {"filename": "pyproject.toml"},
+                    ],
+                    commits,
+                    base,
+                    CONFIG,
+                )
+            )
 
     def test_dispatch_wait_fails_closed_on_subject_drift(self) -> None:
         base, _, pull, commit = canonical_fixture()
