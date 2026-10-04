@@ -47,8 +47,11 @@ permissions:
 concurrency:
   # One privileged reconciliation lock prevents schedule/workflow_run/target races
   # from duplicating owner comments, approvals, recovery, or merge attempts.
+  # Publisher completion gets its own pending slot: GitHub keeps only one pending
+  # run per concurrency group even when cancel-in-progress is false, so ordinary
+  # workflow_run bursts must not replace the wake that bulk-finalizes published heads.
   # Pull-request self-tests remain isolated by their untrusted head branch.
-  group: dependency-governance-${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || 'reconcile' }}
+  group: dependency-governance-${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.event_name == 'workflow_run' && github.event.workflow_run.name == 'dependency-lock-publisher' && 'publisher-reconcile' || 'reconcile' }}
   cancel-in-progress: false
 
 env:
