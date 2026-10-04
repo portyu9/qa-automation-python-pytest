@@ -145,5 +145,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEPENDABOT_OWNER_TOKEN: ${{ secrets.DEPENDABOT_OWNER_TOKEN }}
-          ALLOW_MERGE: ${{ github.event_name == 'workflow_run' || github.event_name == 'schedule' || inputs['allow-merge'] }}
+          ALLOW_MERGE: ${{ github.event_name == 'workflow_run' || github.event_name == 'schedule' || github.event_name == 'push' || inputs['allow-merge'] }}
         run: python .github/scripts/dependency_governance.py
