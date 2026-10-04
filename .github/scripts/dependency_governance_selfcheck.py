@@ -24,6 +24,7 @@ from dependency_governance import (
     qualification_for_head,
     reconcile_independently,
     render_comment,
+    should_bulk_reconcile,
     request_dependabot_refresh,
     request_exact_head_native_workflow_approvals,
     request_exact_head_qualification_dispatches,
@@ -1074,6 +1075,32 @@ class DependencyGovernanceTests(unittest.TestCase):
         self.assertIs(result, assessment)
         self.assertEqual(sleeps, [])
 
+    def test_publisher_completion_is_trusted_bulk_reconcile_wake(self) -> None:
+        event = {
+            "workflow_run": {
+                "name": "dependency-lock-publisher",
+                "path": ".github/workflows/dependency-lock-publisher.yml",
+                "event": "workflow_run",
+                "status": "completed",
+                "head_branch": CONFIG["baseBranch"],
+                "pull_requests": [],
+            }
+        }
+        self.assertTrue(should_bulk_reconcile(event, "workflow_run", CONFIG))
+        for mutation in (
+            {"name": "dependency-locks"},
+            {"path": ".github/workflows/fake.yml"},
+            {"event": "push"},
+            {"status": "in_progress"},
+            {"head_branch": "feature/untrusted"},
+        ):
+            changed = json.loads(json.dumps(event))
+            changed["workflow_run"].update(mutation)
+            self.assertFalse(should_bulk_reconcile(changed, "workflow_run", CONFIG))
+        self.assertTrue(should_bulk_reconcile({}, "schedule", CONFIG))
+        self.assertTrue(should_bulk_reconcile({}, "push", CONFIG))
+        self.assertFalse(should_bulk_reconcile(event, "pull_request_target", CONFIG))
+
     def test_manual_dispatch_input_is_strict(self) -> None:
         self.assertEqual(
             event_pull_number({"inputs": {"pr-number": "54"}}, "workflow_dispatch"), 54
@@ -1128,6 +1155,7 @@ class DependencyGovernanceTests(unittest.TestCase):
         self.assertIn("branches: [main]", workflow)
         self.assertIn("pull_request_target:", workflow)
         self.assertIn("workflow_run:", workflow)
+        self.assertIn("workflows: [ci, extended, security, docs, dependency-locks, dependency-lock-publisher]", workflow)
         self.assertIn("schedule:", workflow)
         self.assertIn("cron: '17 * * * *'", workflow)
         self.assertIn("ref: ${{ github.event.repository.default_branch }}", workflow)
