@@ -1156,10 +1156,10 @@ def published_pip_provenance(
 
     # Imported lazily so dependency_recovery can continue importing this module's
     # shared primitives without a module-import cycle.
-    from dependency_recovery import PUBLISHED_PIP_FILES, assess_recovery_scope
+    from dependency_recovery import assess_recovery_scope, published_pip_pr_diff_is_safe
 
     names = {str(file.get("filename") or "") for file in files}
-    if names != PUBLISHED_PIP_FILES:
+    if not published_pip_pr_diff_is_safe(names):
         return None
 
     scope = assess_recovery_scope(api, pull, files, commits, base_sha, config)
