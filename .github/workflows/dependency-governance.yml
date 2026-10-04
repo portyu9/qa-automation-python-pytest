@@ -25,7 +25,7 @@ on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
   workflow_run:
-    workflows: [ci, extended, security, docs, dependency-locks]
+    workflows: [ci, extended, security, docs, dependency-locks, dependency-lock-publisher]
     types: [completed]
   schedule:
     - cron: '17 * * * *'
