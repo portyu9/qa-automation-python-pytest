@@ -767,6 +767,10 @@ class DependencyGovernanceTests(unittest.TestCase):
                     )
 
             def get(self, path: str) -> dict:
+                match = re.fullmatch(r"/actions/runs/(\d+)", path)
+                if match:
+                    run_id = int(match.group(1))
+                    return next(run for run in self.runs if int(run["id"]) == run_id)
                 self.ref_path = path
                 return {"object": {"sha": head}}
 
@@ -787,6 +791,53 @@ class DependencyGovernanceTests(unittest.TestCase):
         self.assertTrue(
             all(item["state"] == "approval-requested" for item in outcomes)
         )
+
+        class RacingOwnerApi(OwnerApi):
+            def __init__(self, native_api: NativeApi, *, converge: bool) -> None:
+                super().__init__(CONFIG["ownerApprovalLogin"], CONFIG["ownerApprovalUserId"])
+                self.native_api = native_api
+                self.converge = converge
+                self.raced = False
+
+            def post(self, path: str, payload: dict) -> dict:
+                match = re.fullmatch(r"/actions/runs/(\d+)/approve", path)
+                if match and not self.raced:
+                    self.raced = True
+                    run_id = int(match.group(1))
+                    run = next(item for item in self.native_api.runs if int(item["id"]) == run_id)
+                    if self.converge:
+                        run["status"] = "queued"
+                        run["conclusion"] = None
+                        run["triggering_actor"] = {
+                            "login": CONFIG["ownerApprovalLogin"],
+                            "id": CONFIG["ownerApprovalUserId"],
+                        }
+                    raise GovernanceError(
+                        "GitHub API POST https://api.github.com/repos/o/r/actions/runs/"
+                        f"{run_id}/approve failed (403): "
+                        '{"message":"This workflow run is not waiting for approval"}'
+                    )
+                return super().post(path, payload)
+
+        race_api = NativeApi()
+        racing_owner = RacingOwnerApi(race_api, converge=True)
+        race_outcomes = request_exact_head_native_workflow_approvals(
+            race_api, racing_owner, assessment, CONFIG
+        )
+        self.assertEqual(race_outcomes[0]["state"], "already-queued")
+        self.assertEqual(
+            racing_owner.workflow_approvals,
+            list(range(41, 40 + len(CONFIG["requiredWorkflows"]))),
+        )
+
+        blocked_race_api = NativeApi()
+        with self.assertRaisesRegex(GovernanceError, "not waiting for approval"):
+            request_exact_head_native_workflow_approvals(
+                blocked_race_api,
+                RacingOwnerApi(blocked_race_api, converge=False),
+                assessment,
+                CONFIG,
+            )
 
         api.runs[0]["actor"] = {
             "login": CONFIG["ownerApprovalLogin"],
