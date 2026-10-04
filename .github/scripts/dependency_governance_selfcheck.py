@@ -868,6 +868,16 @@ class DependencyGovernanceTests(unittest.TestCase):
             "login": CONFIG["ownerApprovalLogin"],
             "id": CONFIG["ownerApprovalUserId"],
         }
+        owner_approved = native_required_pull_qualification(
+            api,
+            pull,
+            CONFIG,
+            require_trusted_publisher_actor=True,
+        )
+        self.assertTrue(owner_approved["allSuccess"], owner_approved)
+        self.assertFalse(owner_approved["anyFailed"])
+
+        api.runs[0]["triggering_actor"] = {"login": "someone", "id": 123}
         spoofed = native_required_pull_qualification(
             api,
             pull,
