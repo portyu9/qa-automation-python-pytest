@@ -719,7 +719,6 @@ class DependencyGovernanceTests(unittest.TestCase):
         self.assertEqual(api.posts, [])
         self.assertTrue(all(item["state"] == "existing-queued" for item in outcomes))
 
-
     def test_published_native_action_required_runs_are_owner_approved_exactly(self) -> None:
         base, head, pull, commit = canonical_fixture()
         assessment = Assessment(
