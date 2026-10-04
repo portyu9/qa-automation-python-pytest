@@ -1163,9 +1163,11 @@ class DependencyGovernanceTests(unittest.TestCase):
         self.assertNotRegex(workflow, r"ref:\s*\$\{\{\s*github\.event\.pull_request\.head")
         self.assertNotRegex(workflow, r"ref:\s*\$\{\{\s*github\.event\.workflow_run\.head_sha")
         self.assertIn(
-            "group: dependency-governance-${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || 'reconcile' }}",
+            "group: dependency-governance-${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.event_name == 'workflow_run' && github.event.workflow_run.name == 'dependency-lock-publisher' && 'publisher-reconcile' || 'reconcile' }}",
             workflow,
         )
+        self.assertIn("'publisher-reconcile'", workflow)
+        self.assertIn("cancel-in-progress: false", workflow)
         self.assertIn("DEPENDABOT_OWNER_TOKEN: ${{ secrets.DEPENDABOT_OWNER_TOKEN }}", workflow)
         self.assertIn("timeout-minutes: 30", workflow)
         self.assertIn("github.event_name == 'push'", workflow)
