@@ -901,8 +901,29 @@ def request_exact_head_native_workflow_approvals(
                 raise PolicyBlock(
                     f"refusing to approve untrusted native {requirement['workflow']} run {run_id}"
                 )
-            owner_api.post(f"/actions/runs/{run_id}/approve", {})
-            state = "approval-requested"
+            try:
+                owner_api.post(f"/actions/runs/{run_id}/approve", {})
+                state = "approval-requested"
+            except GovernanceError as exc:
+                text = str(exc)
+                if "(403)" not in text or "not waiting for approval" not in text.lower():
+                    raise
+                refreshed = api.get(f"/actions/runs/{run_id}")
+                if not trusted_publisher_native_run_identity_matches(
+                    refreshed,
+                    assessment.pull,
+                    requirement,
+                    config,
+                    allow_owner_trigger=True,
+                ):
+                    raise PolicyBlock(
+                        f"native {requirement['workflow']} run {run_id} changed identity during approval race"
+                    ) from exc
+                refreshed_status = str(refreshed.get("status") or "")
+                refreshed_conclusion = str(refreshed.get("conclusion") or "")
+                if refreshed_status == "completed" and refreshed_conclusion == "action_required":
+                    raise
+                state = f"already-{refreshed_conclusion or refreshed_status or 'transitioned'}"
         elif status == "completed":
             state = f"existing-{conclusion or 'unknown'}"
         else:
