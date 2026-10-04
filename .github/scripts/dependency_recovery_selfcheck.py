@@ -325,6 +325,48 @@ class RecoverySelfCheck(unittest.TestCase):
         self.assertEqual(scope["provenanceState"], "dependabot-plus-trusted-lock-publisher")
         self.assertEqual(GOVERNANCE["ecosystems"]["pip"]["mode"], "manual")
 
+    def test_published_chain_accepts_only_safe_base_collapsed_pr_diffs(self) -> None:
+        accepted = (
+            {"requirements.txt"},
+            {"requirements.txt", "requirements-lock/manifest.json"},
+            {
+                "requirements.txt",
+                "requirements-lock/python-3.11.txt",
+                "requirements-lock/manifest.json",
+            },
+        )
+        for file_names in accepted:
+            fixture = published_fixture()
+            fixture["pull"]["changed_files"] = len(file_names)
+            scope = assess_recovery_scope(
+                FakeApi(fixture),
+                fixture["pull"],
+                [{"filename": item} for item in sorted(file_names)],
+                [fixture["source"], fixture["publisher"]],
+                fixture["base_sha"],
+                GOVERNANCE,
+            )
+            self.assertTrue(scope["eligible"], (file_names, scope["reasons"]))
+            self.assertEqual(scope["provenanceState"], "dependabot-plus-trusted-lock-publisher")
+
+        rejected = (
+            {"requirements-lock/manifest.json"},
+            {"requirements.txt", "pyproject.toml"},
+        )
+        for file_names in rejected:
+            fixture = published_fixture()
+            fixture["pull"]["changed_files"] = len(file_names)
+            scope = assess_recovery_scope(
+                FakeApi(fixture),
+                fixture["pull"],
+                [{"filename": item} for item in sorted(file_names)],
+                [fixture["source"], fixture["publisher"]],
+                fixture["base_sha"],
+                GOVERNANCE,
+            )
+            self.assertFalse(scope["eligible"], file_names)
+            self.assertEqual(scope["provenanceState"], "untrusted")
+
     def test_publisher_identity_message_parent_signature_and_files_are_all_mandatory(self) -> None:
         mutations = (
             ("author", {"login": "portyu9", "id": 1}),
