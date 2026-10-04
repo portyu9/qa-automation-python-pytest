@@ -29,6 +29,8 @@ ACTION_LINE = re.compile(
 POSITIVE_INT = re.compile(r"^[1-9]\d*$")
 QUALIFICATION_POLL_ATTEMPTS = 36
 QUALIFICATION_POLL_INTERVAL_SECONDS = 5.0
+NATIVE_PULL_POLL_ATTEMPTS = 36
+NATIVE_PULL_POLL_INTERVAL_SECONDS = 5.0
 PUBLISHED_PIP_CONSUMED_PULL_WORKFLOW_PATHS = frozenset(
     {".github/workflows/dependency-locks.yml"}
 )
@@ -685,6 +687,303 @@ def select_qualification_run(
     return matches[0] if matches else None
 
 
+
+
+def latest_native_pull_run(
+    runs: list[dict[str, Any]],
+    pull: dict[str, Any],
+    requirement: dict[str, Any],
+) -> dict[str, Any] | None:
+    matches = [run for run in runs if workflow_identity_matches(run, pull, requirement)]
+    matches.sort(
+        key=lambda run: str(run.get("updated_at") or run.get("created_at") or ""),
+        reverse=True,
+    )
+    return matches[0] if matches else None
+
+
+def trusted_publisher_native_run_identity_matches(
+    run: dict[str, Any],
+    pull: dict[str, Any],
+    requirement: dict[str, Any],
+    config: dict[str, Any],
+) -> bool:
+    actor = run.get("actor") or {}
+    triggering_actor = run.get("triggering_actor") or {}
+    return (
+        workflow_identity_matches(run, pull, requirement)
+        and actor.get("login") == config["trustedWorkflowDispatchActorLogin"]
+        and actor.get("id") == config["trustedWorkflowDispatchActorUserId"]
+        and triggering_actor.get("login") == config["trustedWorkflowDispatchActorLogin"]
+        and triggering_actor.get("id") == config["trustedWorkflowDispatchActorUserId"]
+    )
+
+
+def native_required_pull_qualification(
+    api: GitHubApi,
+    pull: dict[str, Any],
+    config: dict[str, Any],
+    *,
+    require_trusted_publisher_actor: bool,
+) -> dict[str, Any]:
+    head_sha = str((pull.get("head") or {}).get("sha") or "")
+    query = urllib.parse.urlencode({"head_sha": head_sha})
+    runs = api.paginate(f"/actions/runs?{query}", "workflow_runs")
+    qualifications: list[dict[str, Any]] = []
+    all_success = True
+    any_failed = False
+
+    for requirement in config["requiredWorkflows"]:
+        run = latest_native_pull_run(runs, pull, requirement)
+        if run is None:
+            all_success = False
+            qualifications.append({**requirement, "state": "missing", "runId": None})
+            continue
+
+        run_id = parse_positive_integer(run.get("id"), "native workflow run id")
+        if require_trusted_publisher_actor and not trusted_publisher_native_run_identity_matches(
+            run, pull, requirement, config
+        ):
+            all_success = False
+            any_failed = True
+            qualifications.append(
+                {
+                    **requirement,
+                    "state": "untrusted-run-actor",
+                    "runId": run_id,
+                }
+            )
+            continue
+
+        status = str(run.get("status") or "")
+        conclusion = str(run.get("conclusion") or "")
+        if status != "completed":
+            all_success = False
+            qualifications.append(
+                {**requirement, "state": status or "pending", "runId": run_id}
+            )
+            continue
+        if conclusion == "action_required":
+            all_success = False
+            qualifications.append(
+                {**requirement, "state": "action-required", "runId": run_id}
+            )
+            continue
+        if conclusion != "success":
+            all_success = False
+            any_failed = True
+            qualifications.append(
+                {
+                    **requirement,
+                    "state": f"workflow-{conclusion or 'unknown'}",
+                    "runId": run_id,
+                }
+            )
+            continue
+
+        jobs = api.paginate(f"/actions/runs/{run_id}/jobs", "jobs")
+        gates = [job for job in jobs if job.get("name") == requirement["gate"]]
+        if len(gates) != 1:
+            all_success = False
+            any_failed = True
+            state = "gate-missing" if not gates else "gate-ambiguous"
+        else:
+            gate = gates[0]
+            gate_status = str(gate.get("status") or "")
+            gate_conclusion = str(gate.get("conclusion") or "")
+            if gate_status != "completed":
+                all_success = False
+                state = gate_status or "gate-pending"
+            elif gate_conclusion != "success":
+                all_success = False
+                any_failed = True
+                state = f"gate-{gate_conclusion or 'unknown'}"
+            else:
+                state = "success"
+        qualifications.append(
+            {**requirement, "state": state, "runId": run_id}
+        )
+
+    return {
+        "allSuccess": all_success,
+        "anyFailed": any_failed,
+        "qualifications": qualifications,
+    }
+
+
+def _assessment_with_native_pull_qualification(
+    assessment: Assessment, native: dict[str, Any]
+) -> Assessment:
+    qualification = dict(assessment.qualification or {})
+    qualification["nativePullQualification"] = native
+    qualification["allSuccess"] = bool(
+        qualification.get("allSuccess") is True and native.get("allSuccess") is True
+    )
+    qualification["anyFailed"] = bool(
+        qualification.get("anyFailed") is True or native.get("anyFailed") is True
+    )
+    return Assessment(
+        pull=assessment.pull,
+        base_sha=assessment.base_sha,
+        files=assessment.files,
+        ecosystem=assessment.ecosystem,
+        provenance=assessment.provenance,
+        metadata=assessment.metadata,
+        semantic=assessment.semantic,
+        qualification=qualification,
+    )
+
+
+def request_exact_head_native_workflow_approvals(
+    api: GitHubApi,
+    owner_api: GitHubApi | None,
+    assessment: Assessment,
+    config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if assessment.provenance.get("state") != "dependabot-plus-trusted-lock-publisher":
+        return []
+    if not (assessment.qualification or {}).get("allSuccess"):
+        return []
+
+    verify_owner_identity(owner_api, config)
+    assert owner_api is not None
+
+    head = assessment.pull.get("head") or {}
+    head_branch = str(head.get("ref") or "")
+    head_sha = str(head.get("sha") or "")
+    if not head_branch or not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+        raise GovernanceError("published pull request has no exact head branch/SHA")
+
+    ref_payload = api.get(
+        f"/git/ref/heads/{urllib.parse.quote(head_branch, safe='')}"
+    )
+    live_head = ((ref_payload or {}).get("object") or {}).get("sha")
+    if live_head != head_sha:
+        raise PolicyBlock(
+            "pull-request head moved before native workflow approval"
+        )
+
+    query = urllib.parse.urlencode({"head_sha": head_sha})
+    runs = api.paginate(f"/actions/runs?{query}", "workflow_runs")
+    outcomes: list[dict[str, Any]] = []
+    for requirement in config["requiredWorkflows"]:
+        run = latest_native_pull_run(runs, assessment.pull, requirement)
+        if run is None:
+            outcomes.append(
+                {
+                    "workflow": requirement["workflow"],
+                    "file": requirement["file"],
+                    "state": "missing",
+                    "runId": None,
+                }
+            )
+            continue
+
+        run_id = parse_positive_integer(run.get("id"), "native workflow run id")
+        status = str(run.get("status") or "")
+        conclusion = str(run.get("conclusion") or "")
+        if status == "completed" and conclusion == "action_required":
+            if not trusted_publisher_native_run_identity_matches(
+                run, assessment.pull, requirement, config
+            ):
+                raise PolicyBlock(
+                    f"refusing to approve untrusted native {requirement['workflow']} run {run_id}"
+                )
+            owner_api.post(f"/actions/runs/{run_id}/approve", {})
+            state = "approval-requested"
+        elif status == "completed":
+            state = f"existing-{conclusion or 'unknown'}"
+        else:
+            state = f"existing-{status or 'pending'}"
+        outcomes.append(
+            {
+                "workflow": requirement["workflow"],
+                "file": requirement["file"],
+                "state": state,
+                "runId": run_id,
+            }
+        )
+    return outcomes
+
+
+def wait_for_exact_head_native_required_checks(
+    api: GitHubApi,
+    assessment: Assessment,
+    config: dict[str, Any],
+    approval_outcomes: list[dict[str, Any]],
+    *,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    poll_attempts: int = NATIVE_PULL_POLL_ATTEMPTS,
+    poll_interval_seconds: float = NATIVE_PULL_POLL_INTERVAL_SECONDS,
+) -> Assessment:
+    if assessment.provenance.get("state") != "dependabot-plus-trusted-lock-publisher":
+        return assessment
+    if not (assessment.qualification or {}).get("allSuccess"):
+        return assessment
+    if poll_attempts < 1:
+        raise GovernanceError("native pull poll_attempts must be positive")
+    if poll_interval_seconds < 0:
+        raise GovernanceError("native pull poll_interval_seconds must be non-negative")
+
+    number = parse_positive_integer(assessment.pull.get("number"), "pull request number")
+    original_head = str((assessment.pull.get("head") or {}).get("sha") or "")
+    original_base = assessment.base_sha
+    if not re.fullmatch(r"[0-9a-f]{40}", original_head):
+        raise GovernanceError("cannot wait for native checks without an exact pull-request head")
+
+    native: dict[str, Any] = {
+        "allSuccess": False,
+        "anyFailed": False,
+        "qualifications": [],
+        "approvalOutcomes": approval_outcomes,
+    }
+    for attempt in range(poll_attempts):
+        fresh_pull = api.get(f"/pulls/{number}")
+        live_base = get_current_base_sha(api, config["baseBranch"])
+        current_head = str((fresh_pull.get("head") or {}).get("sha") or "")
+        if (
+            fresh_pull.get("state") != "open"
+            or current_head != original_head
+            or live_base != original_base
+        ):
+            native = {
+                **native,
+                "allSuccess": False,
+                "anyFailed": True,
+                "qualifications": [
+                    {"workflow": "native-pull", "gate": "subject", "state": "subject-drift"}
+                ],
+            }
+            return _assessment_with_native_pull_qualification(assessment, native)
+
+        native = native_required_pull_qualification(
+            api,
+            fresh_pull,
+            config,
+            require_trusted_publisher_actor=True,
+        )
+        native["approvalOutcomes"] = approval_outcomes
+        if native.get("allSuccess") is True:
+            refreshed = assess_pull(api, number, config, include_qualification=True)
+            if (
+                refreshed.pull.get("state") != "open"
+                or str((refreshed.pull.get("head") or {}).get("sha") or "") != original_head
+                or refreshed.base_sha != original_base
+            ):
+                return _assessment_with_native_pull_qualification(assessment, {
+                    **native,
+                    "allSuccess": False,
+                    "anyFailed": True,
+                })
+            return _assessment_with_native_pull_qualification(refreshed, native)
+        if native.get("anyFailed") is True:
+            return _assessment_with_native_pull_qualification(assessment, native)
+        if attempt + 1 < poll_attempts:
+            sleep_fn(poll_interval_seconds)
+
+    return _assessment_with_native_pull_qualification(assessment, native)
+
+
 def qualification_for_head(
     api: GitHubApi,
     pull: dict[str, Any],
@@ -1056,6 +1355,22 @@ def render_comment(
             lines.append(
                 f"| `{item['workflow']}` | `{item['gate']}` | `{item['state']}` |"
             )
+
+        native = assessment.qualification.get("nativePullQualification")
+        if isinstance(native, dict):
+            lines.extend(
+                [
+                    "",
+                    "**Native protected-check qualification**",
+                    "",
+                    "| Workflow | Protected gate | State |",
+                    "| --- | --- | --- |",
+                ]
+            )
+            for item in native.get("qualifications") or []:
+                lines.append(
+                    f"| `{item['workflow']}` | `{item['gate']}` | `{item['state']}` |"
+                )
 
     if merged and dispatches:
         lines.extend(
@@ -1526,6 +1841,19 @@ def process_pull(
             assessment = wait_for_exact_head_qualification_dispatches(
                 api, assessment, config, qualification_dispatches
             )
+    native_approval_outcomes: list[dict[str, Any]] = []
+    if (
+        allow_merge
+        and assessment.provenance.get("state") == "dependabot-plus-trusted-lock-publisher"
+        and (assessment.qualification or {}).get("allSuccess") is True
+    ):
+        native_approval_outcomes = request_exact_head_native_workflow_approvals(
+            api, owner_api, assessment, config
+        )
+        assessment = wait_for_exact_head_native_required_checks(
+            api, assessment, config, native_approval_outcomes
+        )
+
     merged, final_assessment, dispatches = maybe_merge(
         api, owner_api, assessment, config, allow_merge
     )
