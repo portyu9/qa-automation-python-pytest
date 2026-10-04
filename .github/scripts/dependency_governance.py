@@ -705,15 +705,25 @@ def trusted_publisher_native_run_identity_matches(
     pull: dict[str, Any],
     requirement: dict[str, Any],
     config: dict[str, Any],
+    *,
+    allow_owner_trigger: bool = False,
 ) -> bool:
     actor = run.get("actor") or {}
     triggering_actor = run.get("triggering_actor") or {}
+    github_actions_trigger = (
+        triggering_actor.get("login") == config["trustedWorkflowDispatchActorLogin"]
+        and triggering_actor.get("id") == config["trustedWorkflowDispatchActorUserId"]
+    )
+    owner_trigger = (
+        allow_owner_trigger
+        and triggering_actor.get("login") == config["ownerApprovalLogin"]
+        and triggering_actor.get("id") == config["ownerApprovalUserId"]
+    )
     return (
         workflow_identity_matches(run, pull, requirement)
         and actor.get("login") == config["trustedWorkflowDispatchActorLogin"]
         and actor.get("id") == config["trustedWorkflowDispatchActorUserId"]
-        and triggering_actor.get("login") == config["trustedWorkflowDispatchActorLogin"]
-        and triggering_actor.get("id") == config["trustedWorkflowDispatchActorUserId"]
+        and (github_actions_trigger or owner_trigger)
     )
 
 
@@ -740,7 +750,11 @@ def native_required_pull_qualification(
 
         run_id = parse_positive_integer(run.get("id"), "native workflow run id")
         if require_trusted_publisher_actor and not trusted_publisher_native_run_identity_matches(
-            run, pull, requirement, config
+            run,
+            pull,
+            requirement,
+            config,
+            allow_owner_trigger=True,
         ):
             all_success = False
             any_failed = True
