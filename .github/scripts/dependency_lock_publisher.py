@@ -29,6 +29,69 @@ ARTIFACT_PREFIX = "python-"
 ARTIFACT_SUFFIX = "-lock"
 LOCK_LIMIT_BYTES = 5 * 1024 * 1024
 PUBLISH_MESSAGE = "chore: refresh generated dependency locks"
+TRANSIENT_GITHUB_STATUS_CODES = (500, 502, 503, 504)
+MAX_GITHUB_API_ATTEMPTS = 2
+
+
+def _is_transient_github_server_error(exc: GovernanceError) -> bool:
+    text = str(exc)
+    return any(f"({status})" in text for status in TRANSIENT_GITHUB_STATUS_CODES)
+
+
+def _retry_get(api: GitHubApi, path: str) -> Any:
+    last_error: GovernanceError | None = None
+    for attempt in range(MAX_GITHUB_API_ATTEMPTS):
+        try:
+            return api.get(path)
+        except GovernanceError as exc:
+            last_error = exc
+            if not _is_transient_github_server_error(exc) or attempt + 1 >= MAX_GITHUB_API_ATTEMPTS:
+                raise
+    assert last_error is not None
+    raise last_error
+
+
+def _retry_post(api: GitHubApi, path: str, payload: dict[str, Any]) -> Any:
+    last_error: GovernanceError | None = None
+    for attempt in range(MAX_GITHUB_API_ATTEMPTS):
+        try:
+            return api.post(path, payload)
+        except GovernanceError as exc:
+            last_error = exc
+            if not _is_transient_github_server_error(exc) or attempt + 1 >= MAX_GITHUB_API_ATTEMPTS:
+                raise
+    assert last_error is not None
+    raise last_error
+
+
+def _advance_ref(
+    api: GitHubApi,
+    ref_path: str,
+    source_head: str,
+    commit_sha: str,
+) -> None:
+    last_error: GovernanceError | None = None
+    for attempt in range(MAX_GITHUB_API_ATTEMPTS):
+        current_ref = _retry_get(api, ref_path)
+        current_sha = ((current_ref or {}).get("object") or {}).get("sha")
+        if current_sha == commit_sha:
+            return
+        if current_sha != source_head:
+            raise GovernanceError("Dependabot branch moved before atomic ref publication")
+        try:
+            api.patch(ref_path, {"sha": commit_sha, "force": False})
+            return
+        except GovernanceError as exc:
+            last_error = exc
+            if not _is_transient_github_server_error(exc):
+                raise
+            if attempt + 1 >= MAX_GITHUB_API_ATTEMPTS:
+                confirmed = _retry_get(api, ref_path)
+                if ((confirmed or {}).get("object") or {}).get("sha") == commit_sha:
+                    return
+                raise
+    assert last_error is not None
+    raise last_error
 
 
 def git_blob_sha_bytes(data: bytes) -> str:
@@ -178,7 +241,8 @@ def build_manifest(requirements_bytes: bytes, locks: dict[str, bytes]) -> bytes:
 
 
 def _create_blob(api: GitHubApi, data: bytes) -> str:
-    result = api.post(
+    result = _retry_post(
+        api,
         "/git/blobs",
         {"content": base64.b64encode(data).decode("ascii"), "encoding": "base64"},
     )
@@ -209,7 +273,7 @@ def publish_locks(
     if head.get("sha") != source_head:
         raise GovernanceError("pull-request head moved before lock publication")
 
-    git_commit = api.get(f"/git/commits/{source_head}")
+    git_commit = _retry_get(api, f"/git/commits/{source_head}")
     base_tree = ((git_commit or {}).get("tree") or {}).get("sha")
     if not isinstance(base_tree, str) or not re.fullmatch(r"[0-9a-f]{40}", base_tree):
         raise GovernanceError("cannot resolve source head tree")
@@ -232,12 +296,13 @@ def publish_locks(
             "sha": _create_blob(api, manifest),
         }
     )
-    tree = api.post("/git/trees", {"base_tree": base_tree, "tree": entries})
+    tree = _retry_post(api, "/git/trees", {"base_tree": base_tree, "tree": entries})
     tree_sha = (tree or {}).get("sha")
     if not isinstance(tree_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", tree_sha):
         raise GovernanceError("GitHub did not return a valid generated tree SHA")
 
-    commit = api.post(
+    commit = _retry_post(
+        api,
         "/git/commits",
         {
             "message": (
@@ -254,10 +319,7 @@ def publish_locks(
         raise GovernanceError("GitHub did not return a valid generated commit SHA")
 
     ref_path = _branch_ref_path(branch)
-    current_ref = api.get(ref_path)
-    if ((current_ref or {}).get("object") or {}).get("sha") != source_head:
-        raise GovernanceError("Dependabot branch moved before atomic ref publication")
-    api.patch(ref_path, {"sha": commit_sha, "force": False})
+    _advance_ref(api, ref_path, source_head, commit_sha)
     return commit_sha
 
 
