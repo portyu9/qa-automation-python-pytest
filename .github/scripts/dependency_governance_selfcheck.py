@@ -1168,6 +1168,7 @@ class DependencyGovernanceTests(unittest.TestCase):
         )
         self.assertIn("DEPENDABOT_OWNER_TOKEN: ${{ secrets.DEPENDABOT_OWNER_TOKEN }}", workflow)
         self.assertIn("timeout-minutes: 30", workflow)
+        self.assertIn("github.event_name == 'push'", workflow)
         security = (ROOT / ".github" / "workflows" / "security.yml").read_text(
             encoding="utf-8"
         )
