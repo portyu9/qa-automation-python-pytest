@@ -11,6 +11,7 @@ from dependency_governance import (
     ACTION_LINE,
     Assessment,
     GovernanceError,
+    PolicyBlock,
     PUBLISHED_PIP_CONSUMED_PULL_WORKFLOW_PATHS,
     classify_ecosystem,
     compare_versions,
@@ -19,10 +20,12 @@ from dependency_governance import (
     has_exact_owner_approval,
     parse_dependabot_metadata,
     parse_positive_integer,
+    native_required_pull_qualification,
     qualification_for_head,
     reconcile_independently,
     render_comment,
     request_dependabot_refresh,
+    request_exact_head_native_workflow_approvals,
     request_exact_head_qualification_dispatches,
     select_qualification_run,
     trusted_dispatch_identity_matches,
@@ -31,6 +34,7 @@ from dependency_governance import (
     validate_pip_manual,
     validate_provenance,
     validate_signed_metadata,
+    wait_for_exact_head_native_required_checks,
     wait_for_exact_head_qualification_dispatches,
     workflow_identity_matches,
 )
@@ -102,6 +106,7 @@ class OwnerApi:
         self.identity = {"login": login, "id": user_id}
         self.comments: list[dict] = []
         self.reviews: list[dict] = []
+        self.workflow_approvals: list[int] = []
 
     def get(self, path: str) -> dict:
         if path == "https://api.github.com/user":
@@ -124,6 +129,11 @@ class OwnerApi:
             item = {"id": len(self.reviews) + 1, "body": payload["body"], "user": dict(self.identity), "state": "APPROVED", "commit_id": payload["commit_id"]}
             self.reviews.append(item)
             return item
+        match = re.fullmatch(r"/actions/runs/(\d+)/approve", path)
+        if match:
+            run_id = int(match.group(1))
+            self.workflow_approvals.append(run_id)
+            return {"approved": True, "runId": run_id}
         raise AssertionError(path)
 
 
@@ -709,6 +719,248 @@ class DependencyGovernanceTests(unittest.TestCase):
         self.assertEqual(api.posts, [])
         self.assertTrue(all(item["state"] == "existing-queued" for item in outcomes))
 
+
+    def test_published_native_action_required_runs_are_owner_approved_exactly(self) -> None:
+        base, head, pull, commit = canonical_fixture()
+        assessment = Assessment(
+            pull=pull,
+            base_sha=base,
+            files=[{"filename": "requirements.txt"}],
+            ecosystem="pip",
+            provenance={
+                "eligible": True,
+                "reasons": [],
+                "commit": commit,
+                "state": "dependabot-plus-trusted-lock-publisher",
+            },
+            metadata={"eligible": True, "reasons": [], "metadata": []},
+            semantic={"eligible": True, "reasons": [], "changes": []},
+            qualification={"allSuccess": True, "anyFailed": False, "qualifications": []},
+        )
+
+        class NativeApi:
+            def __init__(self) -> None:
+                self.runs: list[dict] = []
+                for index, requirement in enumerate(CONFIG["requiredWorkflows"], start=40):
+                    self.runs.append(
+                        {
+                            "id": index,
+                            "name": requirement["workflow"],
+                            "path": f".github/workflows/{requirement['file']}",
+                            "event": "pull_request",
+                            "head_sha": head,
+                            "head_branch": pull["head"]["ref"],
+                            "pull_requests": [{"number": pull["number"]}],
+                            "actor": {
+                                "login": CONFIG["trustedWorkflowDispatchActorLogin"],
+                                "id": CONFIG["trustedWorkflowDispatchActorUserId"],
+                            },
+                            "triggering_actor": {
+                                "login": CONFIG["trustedWorkflowDispatchActorLogin"],
+                                "id": CONFIG["trustedWorkflowDispatchActorUserId"],
+                            },
+                            "status": "completed",
+                            "conclusion": "action_required",
+                            "updated_at": f"2026-09-02T12:00:{index:02d}Z",
+                        }
+                    )
+
+            def get(self, path: str) -> dict:
+                self.ref_path = path
+                return {"object": {"sha": head}}
+
+            def paginate(self, path: str, selector: str | None = None) -> list[dict]:
+                self.runs_path = path
+                self.selector = selector
+                return list(self.runs)
+
+        api = NativeApi()
+        owner = OwnerApi(CONFIG["ownerApprovalLogin"], CONFIG["ownerApprovalUserId"])
+        outcomes = request_exact_head_native_workflow_approvals(
+            api, owner, assessment, CONFIG
+        )
+        self.assertEqual(
+            owner.workflow_approvals,
+            list(range(40, 40 + len(CONFIG["requiredWorkflows"]))),
+        )
+        self.assertTrue(
+            all(item["state"] == "approval-requested" for item in outcomes)
+        )
+
+        api.runs[0]["actor"] = {
+            "login": CONFIG["ownerApprovalLogin"],
+            "id": CONFIG["ownerApprovalUserId"],
+        }
+        with self.assertRaises(PolicyBlock):
+            request_exact_head_native_workflow_approvals(
+                api, OwnerApi(), assessment, CONFIG
+            )
+
+    def test_native_protected_check_qualification_requires_exact_gate_success(self) -> None:
+        _, head, pull, _ = canonical_fixture()
+
+        class NativeApi:
+            def __init__(self) -> None:
+                self.runs: list[dict] = []
+                self.jobs: dict[int, list[dict]] = {}
+                for index, requirement in enumerate(CONFIG["requiredWorkflows"], start=60):
+                    self.runs.append(
+                        {
+                            "id": index,
+                            "name": requirement["workflow"],
+                            "path": f".github/workflows/{requirement['file']}",
+                            "event": "pull_request",
+                            "head_sha": head,
+                            "head_branch": pull["head"]["ref"],
+                            "pull_requests": [{"number": pull["number"]}],
+                            "actor": {
+                                "login": CONFIG["trustedWorkflowDispatchActorLogin"],
+                                "id": CONFIG["trustedWorkflowDispatchActorUserId"],
+                            },
+                            "triggering_actor": {
+                                "login": CONFIG["trustedWorkflowDispatchActorLogin"],
+                                "id": CONFIG["trustedWorkflowDispatchActorUserId"],
+                            },
+                            "status": "completed",
+                            "conclusion": "success",
+                            "updated_at": f"2026-09-02T12:01:{index:02d}Z",
+                        }
+                    )
+                    self.jobs[index] = [
+                        {
+                            "name": requirement["gate"],
+                            "status": "completed",
+                            "conclusion": "success",
+                        }
+                    ]
+
+            def paginate(self, path: str, selector: str | None = None) -> list[dict]:
+                if path.startswith("/actions/runs?"):
+                    return list(self.runs)
+                match = re.fullmatch(r"/actions/runs/(\d+)/jobs", path)
+                if match:
+                    return list(self.jobs[int(match.group(1))])
+                raise AssertionError(path)
+
+        api = NativeApi()
+        result = native_required_pull_qualification(
+            api,
+            pull,
+            CONFIG,
+            require_trusted_publisher_actor=True,
+        )
+        self.assertTrue(result["allSuccess"], result)
+        self.assertFalse(result["anyFailed"])
+
+        first_id = int(api.runs[0]["id"])
+        api.jobs[first_id][0]["conclusion"] = "failure"
+        failed = native_required_pull_qualification(
+            api,
+            pull,
+            CONFIG,
+            require_trusted_publisher_actor=True,
+        )
+        self.assertFalse(failed["allSuccess"])
+        self.assertTrue(failed["anyFailed"])
+
+        api.jobs[first_id][0]["conclusion"] = "success"
+        api.runs[0]["triggering_actor"] = {
+            "login": CONFIG["ownerApprovalLogin"],
+            "id": CONFIG["ownerApprovalUserId"],
+        }
+        spoofed = native_required_pull_qualification(
+            api,
+            pull,
+            CONFIG,
+            require_trusted_publisher_actor=True,
+        )
+        self.assertFalse(spoofed["allSuccess"])
+        self.assertTrue(spoofed["anyFailed"])
+
+    def test_native_check_wait_combines_protected_gate_evidence(self) -> None:
+        base, head, pull, commit = canonical_fixture()
+        assessment = Assessment(
+            pull=pull,
+            base_sha=base,
+            files=[{"filename": "requirements.txt"}],
+            ecosystem="pip",
+            provenance={
+                "eligible": True,
+                "reasons": [],
+                "commit": commit,
+                "state": "dependabot-plus-trusted-lock-publisher",
+            },
+            metadata={"eligible": True, "reasons": [], "metadata": []},
+            semantic={"eligible": True, "reasons": [], "changes": []},
+            qualification={"allSuccess": True, "anyFailed": False, "qualifications": []},
+        )
+
+        class NativeApi:
+            def __init__(self) -> None:
+                self.runs: list[dict] = []
+                self.jobs: dict[int, list[dict]] = {}
+                for index, requirement in enumerate(CONFIG["requiredWorkflows"], start=80):
+                    self.runs.append(
+                        {
+                            "id": index,
+                            "name": requirement["workflow"],
+                            "path": f".github/workflows/{requirement['file']}",
+                            "event": "pull_request",
+                            "head_sha": head,
+                            "head_branch": pull["head"]["ref"],
+                            "pull_requests": [{"number": pull["number"]}],
+                            "actor": {
+                                "login": CONFIG["trustedWorkflowDispatchActorLogin"],
+                                "id": CONFIG["trustedWorkflowDispatchActorUserId"],
+                            },
+                            "triggering_actor": {
+                                "login": CONFIG["trustedWorkflowDispatchActorLogin"],
+                                "id": CONFIG["trustedWorkflowDispatchActorUserId"],
+                            },
+                            "status": "completed",
+                            "conclusion": "success",
+                            "updated_at": f"2026-09-02T12:02:{index:02d}Z",
+                        }
+                    )
+                    self.jobs[index] = [
+                        {
+                            "name": requirement["gate"],
+                            "status": "completed",
+                            "conclusion": "success",
+                        }
+                    ]
+
+            def get(self, path: str) -> dict:
+                if path == f"/pulls/{pull['number']}":
+                    return pull
+                if path.startswith("/git/ref/heads/"):
+                    return {"object": {"sha": base}}
+                raise AssertionError(path)
+
+            def paginate(self, path: str, selector: str | None = None) -> list[dict]:
+                if path.startswith("/actions/runs?"):
+                    return list(self.runs)
+                match = re.fullmatch(r"/actions/runs/(\d+)/jobs", path)
+                if match:
+                    return list(self.jobs[int(match.group(1))])
+                raise AssertionError(path)
+
+        api = NativeApi()
+        with patch("dependency_governance.assess_pull", return_value=assessment):
+            result = wait_for_exact_head_native_required_checks(
+                api,
+                assessment,
+                CONFIG,
+                [{"workflow": "ci", "state": "approval-requested", "runId": 80}],
+                sleep_fn=lambda _: None,
+                poll_attempts=1,
+                poll_interval_seconds=0,
+            )
+        self.assertTrue(result.qualification["allSuccess"])
+        self.assertTrue(
+            result.qualification["nativePullQualification"]["allSuccess"]
+        )
+
     def test_requested_dispatches_are_waited_for_until_exact_head_success(self) -> None:
         base, head, pull, commit = canonical_fixture()
         pending = Assessment(
@@ -888,6 +1140,7 @@ class DependencyGovernanceTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("DEPENDABOT_OWNER_TOKEN: ${{ secrets.DEPENDABOT_OWNER_TOKEN }}", workflow)
+        self.assertIn("timeout-minutes: 30", workflow)
         security = (ROOT / ".github" / "workflows" / "security.yml").read_text(
             encoding="utf-8"
         )
