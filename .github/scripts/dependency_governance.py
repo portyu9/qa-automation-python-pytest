@@ -687,8 +687,6 @@ def select_qualification_run(
     return matches[0] if matches else None
 
 
-
-
 def latest_native_pull_run(
     runs: list[dict[str, Any]],
     pull: dict[str, Any],
