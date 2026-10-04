@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -44,6 +45,8 @@ PUBLISHED_PIP_FILES = {
     "requirements-lock/manifest.json",
 }
 DERIVED_LOCK_FILES = PUBLISHED_PIP_FILES - {"requirements.txt"}
+EXPECTED_PYTHONS = ("3.11", "3.12", "3.13", "3.14")
+PUBLISHED_MANIFEST_PATH = "requirements-lock/manifest.json"
 
 
 def published_pip_pr_diff_is_safe(file_names: set[str]) -> bool:
@@ -373,8 +376,93 @@ def classify_auxiliary_run_failure(
     return _terminal_failure_classification(run, jobs, failed, logs_by_job_id, recovery_config)
 
 
+def _git_blob_sha_text(text: str) -> str:
+    data = text.encode("utf-8")
+    header = f"blob {len(data)}\0".encode()
+    return hashlib.sha1(header + data).hexdigest()
+
+
+def _validate_publisher_tree(api: GitHubApi, publisher_sha: str) -> list[str]:
+    """Bind the published head tree to the canonical lock manifest, including unchanged blobs."""
+    reasons: list[str] = []
+
+    def read_text(path: str) -> str | None:
+        try:
+            return api.file_at(path, publisher_sha)
+        except (GovernanceError, UnicodeDecodeError, ValueError) as exc:
+            reasons.append(f"unable to read published dependency artifact {path}: {exc}")
+            return None
+
+    manifest_text = read_text(PUBLISHED_MANIFEST_PATH)
+    if manifest_text is None:
+        return unique(reasons)
+    try:
+        manifest = json.loads(manifest_text)
+    except json.JSONDecodeError:
+        reasons.append("published dependency lock manifest is not valid JSON")
+        return unique(reasons)
+    if not isinstance(manifest, dict):
+        reasons.append("published dependency lock manifest must be a JSON object")
+        return unique(reasons)
+
+    if manifest.get("schemaVersion") != 1:
+        reasons.append("published dependency lock manifest schema is not supported")
+    if manifest.get("generator") != {
+        "name": "pip-tools",
+        "version": "7.6.1",
+        "hashMode": "pip --require-hashes",
+    }:
+        reasons.append("published dependency lock generator identity drifted")
+
+    requirements_text = read_text("requirements.txt")
+    if requirements_text is not None:
+        expected_source = {
+            "path": "requirements.txt",
+            "gitBlob": _git_blob_sha_text(requirements_text),
+        }
+        if manifest.get("source") != expected_source:
+            reasons.append("published manifest does not bind the exact requirements.txt blob")
+
+    locks = manifest.get("locks")
+    if not isinstance(locks, list):
+        reasons.append("published dependency lock manifest must contain a locks list")
+        return unique(reasons)
+    entries: dict[str, dict[str, Any]] = {}
+    for entry in locks:
+        if not isinstance(entry, dict):
+            reasons.append("published dependency lock manifest contains a non-object lock entry")
+            continue
+        version = str(entry.get("python") or "")
+        if version in entries:
+            reasons.append(f"published dependency lock manifest duplicates Python {version}")
+            continue
+        entries[version] = entry
+    if set(entries) != set(EXPECTED_PYTHONS) or len(locks) != len(EXPECTED_PYTHONS):
+        reasons.append("published dependency lock manifest must contain exactly Python 3.11-3.14")
+
+    for version in EXPECTED_PYTHONS:
+        entry = entries.get(version)
+        if entry is None:
+            continue
+        expected_path = f"requirements-lock/python-{version}.txt"
+        if entry.get("path") != expected_path:
+            reasons.append(f"published manifest has unexpected lock path for Python {version}")
+            continue
+        lock_text = read_text(expected_path)
+        if lock_text is None:
+            continue
+        expected_blob = _git_blob_sha_text(lock_text)
+        if entry.get("gitBlob") != expected_blob:
+            reasons.append(f"published manifest does not bind the exact Python {version} lock blob")
+
+    return unique(reasons)
+
+
 def _validate_publisher_commit(
-    source: dict[str, Any], publisher: dict[str, Any], config: dict[str, Any]
+    api: GitHubApi,
+    source: dict[str, Any],
+    publisher: dict[str, Any],
+    config: dict[str, Any],
 ) -> list[str]:
     reasons: list[str] = []
     source_sha = str(source.get("sha") or "")
@@ -413,8 +501,14 @@ def _validate_publisher_commit(
     if str(git_commit.get("message") or "") != expected_message:
         reasons.append("generated lock commit message does not bind the exact Dependabot source head")
     file_names = {str(file.get("filename") or "") for file in (publisher.get("files") or [])}
-    if file_names != DERIVED_LOCK_FILES:
-        reasons.append("generated lock commit changes files outside the exact four locks plus manifest")
+    if (
+        PUBLISHED_MANIFEST_PATH not in file_names
+        or not file_names.issubset(DERIVED_LOCK_FILES)
+    ):
+        reasons.append(
+            "generated lock commit must update the manifest and may change only trusted derived lock paths"
+        )
+    reasons.extend(_validate_publisher_tree(api, publisher_sha))
     return unique(reasons)
 
 
@@ -502,7 +596,7 @@ def assess_recovery_scope(
     source_files = {str(file.get("filename") or "") for file in (source.get("files") or [])}
     if source_files != {"requirements.txt"}:
         reasons.append("Dependabot source commit must change requirements.txt only before lock publication")
-    reasons.extend(_validate_publisher_commit(source, publisher, config))
+    reasons.extend(_validate_publisher_commit(api, source, publisher, config))
     if (pull.get("head") or {}).get("sha") != publisher_sha:
         reasons.append("pull-request head is not the verified trusted lock-publisher commit")
     return {
