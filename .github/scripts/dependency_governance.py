@@ -1885,6 +1885,23 @@ def reconcile_independently(
     return results, failures
 
 
+def should_bulk_reconcile(
+    event: dict[str, Any], event_name: str, config: dict[str, Any]
+) -> bool:
+    if should_bulk_reconcile(event, event_name, config):
+        return True
+    if event_name != "workflow_run":
+        return False
+    run = event.get("workflow_run") or {}
+    return (
+        run.get("name") == "dependency-lock-publisher"
+        and run.get("path") == ".github/workflows/dependency-lock-publisher.yml"
+        and run.get("event") == "workflow_run"
+        and run.get("status") == "completed"
+        and run.get("head_branch") == config["baseBranch"]
+    )
+
+
 def event_pull_number(event: dict[str, Any], event_name: str) -> int | None:
     if event_name in {"pull_request_target", "pull_request"}:
         number = (event.get("pull_request") or {}).get("number")
