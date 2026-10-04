@@ -45,6 +45,14 @@ PUBLISHED_PIP_FILES = {
 }
 DERIVED_LOCK_FILES = PUBLISHED_PIP_FILES - {"requirements.txt"}
 
+
+def published_pip_pr_diff_is_safe(file_names: set[str]) -> bool:
+    """Allow base-converged published chains without widening their path authority."""
+    return (
+        "requirements.txt" in file_names
+        and file_names.issubset(PUBLISHED_PIP_FILES)
+    )
+
 TRANSIENT_SIGNATURES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("dns-eai-again", re.compile(r"\bEAI_AGAIN\b", re.I)),
     ("connection-reset", re.compile(r"\bECONNRESET\b", re.I)),
@@ -458,7 +466,7 @@ def assess_recovery_scope(
         len(commits) == 2
         and pull.get("commits") == 2
         and str((pull.get("head") or {}).get("ref") or "").startswith("dependabot/pip/")
-        and file_names == PUBLISHED_PIP_FILES
+        and published_pip_pr_diff_is_safe(file_names)
     )
     if not is_published_pip_candidate:
         reasons.extend(standard.get("reasons") or [])
