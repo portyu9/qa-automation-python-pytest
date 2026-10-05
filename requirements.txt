@@ -12,6 +12,6 @@ locust>=2.46.6,<3
 openapi-spec-validator>=0.9.0,<1
 openapi-schema-validator>=0.9.0,<1
 zaproxy>=0.6.0,<1
-cryptography>=50.0.1,<51
+cryptography>=50.0.2,<51
 pyOpenSSL>=26.4.0,<27
 ruff>=0.16.9,<1
