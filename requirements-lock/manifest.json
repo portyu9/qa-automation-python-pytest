@@ -7,28 +7,28 @@
   },
   "source": {
     "path": "requirements.txt",
-    "gitBlob": "59024e9e94660545d7e5b8893b54409726a032a3"
+    "gitBlob": "bf9042baa853fd80a8e0e6862169210860c10d54"
   },
   "locks": [
     {
       "python": "3.11",
       "path": "requirements-lock/python-3.11.txt",
-      "gitBlob": "cba02744c69fa6ca1e2993e2bf5fd91fe1be9636"
+      "gitBlob": "203f02d8fed3f88271e0b3f0f73098f1eb3c9a74"
     },
     {
       "python": "3.12",
       "path": "requirements-lock/python-3.12.txt",
-      "gitBlob": "a2e5a6d7dddf392390eae04815924e8c257e30a9"
+      "gitBlob": "cfb3e5896191fabd90b1f103e81341cee55c5af2"
     },
     {
       "python": "3.13",
       "path": "requirements-lock/python-3.13.txt",
-      "gitBlob": "92dddf8b937c46262b471c7f8cb1df2ff8a228e2"
+      "gitBlob": "d4051efa1fe77e2ece792e42f51c2971d20e0e5a"
     },
     {
       "python": "3.14",
       "path": "requirements-lock/python-3.14.txt",
-      "gitBlob": "d2e7428f15592efa97ecb2b5c19f7253e29c8017"
+      "gitBlob": "12f8d857fd4760802026cb97dbced40ed29c3759"
     }
   ]
 }
