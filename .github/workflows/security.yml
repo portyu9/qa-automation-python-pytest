@@ -167,26 +167,54 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Probe GitHub Dependency graph
+      - name: Probe the actual pull-request Dependency Review comparison API
         id: dependency-graph
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          if gh api \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "repos/$GITHUB_REPOSITORY/dependency-graph/sbom" >/dev/null 2>&1; then
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo '::error::Missing immutable PR base/head SHAs for Dependency Review.'
+            exit 1
+          }
+          response="$RUNNER_TEMP/dependency-review-comparison.json"
+          if ! status="$(curl --silent --show-error --max-time 20 --retry 2 \
+            --output "$response" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/dependency-graph/compare/$BASE_SHA...$HEAD_SHA")"; then
+            echo '::error::Dependency Review comparison API transport failed; refusing degraded success.'
+            exit 1
+          fi
+          if [[ "$status" == 200 ]]; then
+            jq -e 'type == "array"' "$response" >/dev/null || {
+              echo '::error::Dependency Review comparison API returned malformed data.'
+              exit 1
+            }
             echo 'available=true' >> "$GITHUB_OUTPUT"
-          else
+            echo 'Authenticated PR dependency comparison succeeded; run change-aware Dependency Review.'
+          elif [[ "$status" == 403 || "$status" == 404 ]]; then
+            message="$(jq -r 'if type == "object" then (.message // "unspecified") else "non-JSON API error" end' "$response" 2>/dev/null | tr '\n' ' ' | cut -c 1-200 || true)"
+            if [[ "${message,,}" == *"rate limit"* || "${message,,}" == *"abuse detection"* ]]; then
+              echo "::error::Dependency Review API rate-limited the request (HTTP $status); refusing false degraded status."
+              exit 1
+            fi
             echo 'available=false' >> "$GITHUB_OUTPUT"
-            echo '::warning::GitHub Dependency graph is unavailable; change-aware Dependency Review cannot run.'
+            echo "::warning::GitHub PR dependency comparison returned HTTP $status: $message. Change-aware Dependency Review is NOT operational. Independent repository vulnerability scans remain required but are not equivalent."
             {
-              echo '### Dependency Review fallback'
+              echo '### Dependency Review: confirmed degraded coverage'
               echo
-              echo 'GitHub Dependency graph is unavailable. Independent attributed Trivy scanning of every committed Python hash lock remains required.'
+              echo "- Exact PR dependency comparison: HTTP $status ($message)."
+              echo '- GitHub Dependency Review action was not run. The required independent npm/Python/Maven/NuGet/image/Trivy gates remain unchanged, not equivalent to PR change review.'
+              echo '- Enable/configure Dependency Graph and proper GitHub Actions token access in repository security settings to restore this control.'
             } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::Unexpected Dependency Review API HTTP $status; refusing degraded success."
+            exit 1
           fi
       - name: Review dependency changes
         if: steps.dependency-graph.outputs.available == 'true'
