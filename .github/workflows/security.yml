@@ -172,8 +172,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.governance-base-sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.governance-head-sha }}
         run: |
           set -euo pipefail
           [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || {
