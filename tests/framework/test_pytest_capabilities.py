@@ -76,6 +76,17 @@ async def test_asyncio_integration_uses_native_async_test_execution() -> None:
 
 
 @pytest.mark.unit
+def test_asyncio_loop_policy_is_explicit_under_warnings_as_errors(
+    pytestconfig: pytest.Config,
+) -> None:
+    """Prevent pytest-asyncio upgrades from aborting strict CI during configure."""
+    assert pytestconfig.getini("asyncio_mode") == "strict"
+    assert pytestconfig.getini("asyncio_default_fixture_loop_scope") == "function"
+    assert pytestconfig.getini("asyncio_default_test_loop_scope") == "function"
+    assert "error" in pytestconfig.getini("filterwarnings")
+
+
+@pytest.mark.unit
 def test_unknown_capability_selector_fails_collection_instead_of_skipping_everything() -> None:
     class FakeConfig:
         @staticmethod
