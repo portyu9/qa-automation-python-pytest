@@ -1358,7 +1358,7 @@ class GovernanceGetRetryTests(unittest.TestCase):
                 side_effect=[self.server_error(500) for _ in range(3)],
             ) as urlopen,
             patch("dependency_governance.time.sleep") as sleep,
-            self.assertRaisesRegex(GovernanceError, r"failed \\(500\\)"),
+            self.assertRaisesRegex(GovernanceError, r"failed \(500\)"),
         ):
             self.api.get("/pulls/17")
         self.assertEqual(urlopen.call_count, 3)
