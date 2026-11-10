@@ -20,6 +20,9 @@ from typing import Any, Callable
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = ROOT / ".github" / "dependency-governance.json"
 PAGE_SIZE = 100
+TRANSIENT_GET_ATTEMPTS = 3
+TRANSIENT_GET_DELAY_SECONDS = 0.25
+TRANSIENT_GET_STATUSES = frozenset({500, 502, 503, 504})
 SAFE_TERMINAL_CONCLUSIONS = {"success", "neutral", "skipped"}
 ACTION_LINE = re.compile(
     r"^(?P<prefix>\s*(?:-\s+)?uses:\s+)"
@@ -259,16 +262,27 @@ class GitHubApi:
                 **({"Content-Type": "application/json"} if payload is not None else {}),
             },
         )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                raw = response.read()
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[:1000]
-            raise GovernanceError(
-                f"GitHub API {method} {url} failed ({exc.code}): {detail}"
-            ) from exc
-        except OSError as exc:
-            raise GovernanceError(f"GitHub API {method} {url} failed: {exc}") from exc
+        # Retry only authenticated, idempotent GET on transient server errors.
+        # A failed write may have succeeded remotely; never replay it here.
+        for attempt in range(TRANSIENT_GET_ATTEMPTS):
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    raw = response.read()
+                break
+            except urllib.error.HTTPError as exc:
+                detail = exc.read(1000).decode("utf-8", "replace")
+                if (
+                    method == "GET"
+                    and exc.code in TRANSIENT_GET_STATUSES
+                    and attempt + 1 < TRANSIENT_GET_ATTEMPTS
+                ):
+                    time.sleep(TRANSIENT_GET_DELAY_SECONDS * (attempt + 1))
+                    continue
+                raise GovernanceError(
+                    f"GitHub API {method} {url} failed ({exc.code}): {detail}"
+                ) from exc
+            except OSError as exc:
+                raise GovernanceError(f"GitHub API {method} {url} failed: {exc}") from exc
         if not raw:
             return None
         try:
