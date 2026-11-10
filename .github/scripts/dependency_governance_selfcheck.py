@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 import json
 import re
 import unittest
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -11,6 +13,7 @@ from dependency_governance import (
     ACTION_LINE,
     Assessment,
     GovernanceError,
+    GitHubApi,
     PolicyBlock,
     PUBLISHED_PIP_CONSUMED_PULL_WORKFLOW_PATHS,
     classify_ecosystem,
@@ -1313,6 +1316,87 @@ class DependencyGovernanceTests(unittest.TestCase):
             "head-ref: ${{ github.event.pull_request.head.sha || inputs.governance-head-sha }}",
             security,
         )
+
+
+class GovernanceGetRetryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.api = GitHubApi("fixture-token", "portyu9/qa-automation-python-pytest", 2)
+
+    @staticmethod
+    def server_error(status: int) -> urllib.error.HTTPError:
+        return urllib.error.HTTPError(
+            "https://api.github.com/user",
+            status,
+            "fixture",
+            {},
+            io.BytesIO(b"fixture server error"),
+        )
+
+    def test_transient_get_recovers_with_exact_bearer_identity(self) -> None:
+        for status in (500, 502, 503, 504):
+            with self.subTest(status=status):
+                with (
+                    patch(
+                        "dependency_governance.urllib.request.urlopen",
+                        side_effect=[
+                            self.server_error(status),
+                            io.BytesIO(b'{"login":"owner"}'),
+                        ],
+                    ) as urlopen,
+                    patch("dependency_governance.time.sleep") as sleep,
+                ):
+                    result = self.api.get("https://api.github.com/user")
+                    self.assertEqual(result, {"login": "owner"})
+                    self.assertEqual(urlopen.call_count, 2)
+                    self.assertEqual(sleep.call_count, 1)
+                    self.assertEqual(sleep.call_args.args[0], 0.25)
+                    request = urlopen.call_args.args[0]
+                    self.assertEqual(request.get_method(), "GET")
+                    self.assertEqual(request.get_header("Authorization"), "Bearer fixture-token")
+
+    def test_exhausted_get_is_bounded_and_fails_closed(self) -> None:
+        with (
+            patch(
+                "dependency_governance.urllib.request.urlopen",
+                side_effect=[self.server_error(500) for _ in range(3)],
+            ) as urlopen,
+            patch("dependency_governance.time.sleep") as sleep,
+        ):
+            with self.assertRaisesRegex(GovernanceError, "failed \\(500\\)"):
+                self.api.get("/pulls/17")
+            self.assertEqual(urlopen.call_count, 3)
+            self.assertEqual([c.args[0] for c in sleep.call_args_list], [0.25, 0.5])
+
+    def test_policy_and_rate_limit_get_errors_never_retry(self) -> None:
+        for status in (400, 401, 403, 404, 409, 422, 429):
+            with self.subTest(status=status):
+                with (
+                    patch(
+                        "dependency_governance.urllib.request.urlopen",
+                        side_effect=self.server_error(status),
+                    ) as urlopen,
+                    patch("dependency_governance.time.sleep") as sleep,
+                ):
+                    with self.assertRaises(GovernanceError):
+                        self.api.get("/pulls/17")
+                    self.assertEqual(urlopen.call_count, 1)
+                    sleep.assert_not_called()
+
+    def test_post_patch_and_put_never_replay_even_on_http_500(self) -> None:
+        for method in ("POST", "PATCH", "PUT"):
+            with self.subTest(method=method):
+                with (
+                    patch(
+                        "dependency_governance.urllib.request.urlopen",
+                        side_effect=self.server_error(500),
+                    ) as urlopen,
+                    patch("dependency_governance.time.sleep") as sleep,
+                ):
+                    with self.assertRaises(GovernanceError):
+                        self.api.request(method, "/pulls/17", {"event": "APPROVE"})
+                    self.assertEqual(urlopen.call_count, 1)
+                    self.assertEqual(urlopen.call_args.args[0].get_method(), method)
+                    sleep.assert_not_called()
 
 
 if __name__ == "__main__":
