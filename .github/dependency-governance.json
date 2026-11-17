@@ -89,5 +89,6 @@
   "ownerApprovalLogin": "portyu9",
   "ownerApprovalUserId": 35150859,
   "trustedWorkflowDispatchActorLogin": "github-actions[bot]",
-  "trustedWorkflowDispatchActorUserId": 41898282
+  "trustedWorkflowDispatchActorUserId": 41898282,
+  "nativeRefreshEscalationMinutes": 30
 }
