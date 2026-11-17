@@ -5,7 +5,7 @@ import json
 import re
 import unittest
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -156,6 +156,8 @@ class DependencyGovernanceTests(unittest.TestCase):
         self.assertTrue(validate_config({**CONFIG, "manualReviewPaths": []}))
         self.assertTrue(validate_config({**CONFIG, "ownerApprovalRequired": False}))
         self.assertTrue(validate_config({**CONFIG, "ownerApprovalUserId": 0}))
+        for invalid in (None, False, 0, 29, "30", 1441, 30.5):
+            self.assertTrue(validate_config({**CONFIG, "nativeRefreshEscalationMinutes": invalid}))
 
     def test_positive_integer_parser(self) -> None:
         self.assertEqual(parse_positive_integer("54"), 54)
@@ -449,6 +451,63 @@ class DependencyGovernanceTests(unittest.TestCase):
         self.assertIn("trusted publisher", recreate_owner.comments[0]["body"])
         self.assertTrue(request_dependabot_refresh(recreate_owner, published, CONFIG))
         self.assertEqual(len(recreate_owner.comments), 1)
+
+    def test_owner_refresh_escalates_expired_native_rebase_once_without_bypassing_provenance(self) -> None:
+        _, head, pull, commit = canonical_fixture()
+        start = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)
+        stale = Assessment(
+            pull=pull, base_sha="c" * 40,
+            files=[{"filename": ".github/workflows/ci.yml"}],
+            ecosystem="github-actions",
+            provenance={"eligible": False, "reasons": [
+                "PR is not rebased directly on the current base branch head"
+            ], "commit": commit},
+            metadata={"eligible": True, "reasons": [], "metadata": []},
+            semantic={"eligible": True, "reasons": [], "changes": []},
+            qualification=None,
+        )
+        lease = timedelta(minutes=CONFIG["nativeRefreshEscalationMinutes"])
+        owner = OwnerApi(CONFIG["ownerApprovalLogin"], CONFIG["ownerApprovalUserId"])
+        self.assertTrue(request_dependabot_refresh(owner, stale, CONFIG, observed_at=start))
+        self.assertEqual(len(owner.comments), 1)
+        self.assertTrue(owner.comments[0]["body"].startswith("@dependabot rebase\n"))
+        owner.comments[0]["created_at"] = start.isoformat()
+        request_dependabot_refresh(
+            owner, stale, CONFIG, observed_at=start + lease - timedelta(microseconds=1)
+        )
+        self.assertEqual(len(owner.comments), 1)
+        request_dependabot_refresh(owner, stale, CONFIG, observed_at=start + lease)
+        self.assertEqual(len(owner.comments), 2)
+        self.assertTrue(owner.comments[1]["body"].startswith("@dependabot recreate\n"))
+        self.assertIn(head, owner.comments[1]["body"])
+        request_dependabot_refresh(owner, stale, CONFIG, observed_at=start + timedelta(days=1))
+        self.assertEqual(len(owner.comments), 2, "one recreate per exact source")
+
+        for invalid_stamp in ("invalid", "2100-01-01T00:00:00Z"):
+            unknown = OwnerApi()
+            request_dependabot_refresh(unknown, stale, CONFIG, observed_at=start)
+            unknown.comments[0]["created_at"] = invalid_stamp
+            request_dependabot_refresh(unknown, stale, CONFIG, observed_at=start + lease)
+            self.assertEqual(len(unknown.comments), 1)
+        imposter = OwnerApi()
+        imposter.comments.append({
+            "body": owner.comments[0]["body"],
+            "created_at": start.isoformat(),
+            "user": {"login": "attacker", "id": 12},
+        })
+        request_dependabot_refresh(imposter, stale, CONFIG, observed_at=start + lease)
+        self.assertTrue(imposter.comments[-1]["body"].startswith("@dependabot rebase\n"))
+        self.assertEqual(len(imposter.comments), 2)
+
+        stale.pull["head"]["sha"] = "d" * 40
+        request_dependabot_refresh(owner, stale, CONFIG, observed_at=start + lease)
+        self.assertEqual(len(owner.comments), 3)
+        self.assertTrue(owner.comments[-1]["body"].startswith("@dependabot rebase\n"))
+        with self.assertRaises(GovernanceError):
+            request_dependabot_refresh(owner, stale, CONFIG, observed_at=datetime(2026, 10, 4, 12))
+        blocked = copy.deepcopy(stale)
+        blocked.provenance["reasons"].append("unverified bot metadata")
+        self.assertFalse(request_dependabot_refresh(owner, blocked, CONFIG, observed_at=start))
 
     def test_version_comparison_treats_zero_minor_as_breaking_risk(self) -> None:
         self.assertEqual(compare_versions("7.0.1", "7.0.2"), "patch")
