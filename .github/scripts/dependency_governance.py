@@ -13,7 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -141,6 +141,10 @@ def validate_config(config: dict[str, Any]) -> list[str]:
         value = config.get(key)
         if not isinstance(value, int) or value < 1 or value > maximum:
             errors.append(f"{key} must be an integer from 1 to {maximum}")
+
+    lease = config.get("nativeRefreshEscalationMinutes")
+    if type(lease) is not int or not 30 <= lease <= 1440:
+        errors.append("nativeRefreshEscalationMinutes must be an integer from 30 to 1440")
 
     labels = config.get("manualReviewLabels")
     if not isinstance(labels, list) or not labels or not all(nonempty(x) for x in labels):
@@ -1554,41 +1558,70 @@ def request_dependabot_refresh(
     owner_api: GitHubApi | None,
     assessment: Assessment,
     config: dict[str, Any],
+    *,
+    observed_at: datetime | None = None,
 ) -> bool:
+    """Bound stale signed Dependabot remediation to at most one owner-authenticated recreate."""
     stale_reason = "PR is not rebased directly on the current base branch head"
     if assessment.provenance.get("reasons") != [stale_reason]:
         return False
     verify_owner_identity(owner_api, config)
     assert owner_api is not None
+    now = observed_at if observed_at is not None else datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise GovernanceError("Dependabot refresh observation clock must be timezone-aware")
     number = int(assessment.pull["number"])
     head_sha = str((assessment.pull.get("head") or {}).get("sha") or "")
     published_pip = assessment.provenance.get("state") == "dependabot-plus-trusted-lock-publisher"
-    command = "recreate" if published_pip else "rebase"
-    marker = f"{OWNER_REFRESH_MARKER}{head_sha}:{assessment.base_sha}:{command} -->"
     comments = owner_api.paginate(f"/issues/{number}/comments")
-    if any(
-        marker in str(comment.get("body") or "")
-        and (comment.get("user") or {}).get("login") == config["ownerApprovalLogin"]
-        and (comment.get("user") or {}).get("id") == config["ownerApprovalUserId"]
-        for comment in comments
-    ):
+
+    def marker(command: str) -> str:
+        return f"{OWNER_REFRESH_MARKER}{head_sha}:{assessment.base_sha}:{command} -->"
+
+    def matching(command: str) -> list[dict[str, Any]]:
+        return [
+            item for item in comments
+            if marker(command) in str(item.get("body") or "")
+            and (item.get("user") or {}).get("login") == config["ownerApprovalLogin"]
+            and (item.get("user") or {}).get("id") == config["ownerApprovalUserId"]
+            and item.get("performed_via_github_app") is None
+        ]
+
+    rebases, recreates = matching("rebase"), matching("recreate")
+    if len(rebases) > 1 or len(recreates) > 1:
+        raise GovernanceError("ambiguous owner-authenticated Dependabot refresh markers")
+
+    # A derived lock-publisher commit must be discarded by native recreate;
+    # only an untouched signed source can safely receive the initial rebase.
+    command = "recreate" if published_pip else "rebase"
+    if command == "rebase" and rebases:
+        raw = rebases[0].get("created_at")
+        try:
+            issued = datetime.fromisoformat(raw.replace("Z", "+00:00")) if isinstance(raw, str) else None
+        except ValueError:
+            issued = None
+        if issued is None or issued.tzinfo is None or now < issued.astimezone(timezone.utc):
+            return True
+        if now - issued.astimezone(timezone.utc) < timedelta(minutes=config["nativeRefreshEscalationMinutes"]):
+            return True
+        command = "recreate"
+    if (command == "recreate" and recreates) or (command == "rebase" and rebases):
         return True
+
+    purpose = (
+        "This published pip PR contains a derived lock-publisher commit; native recreate "
+        "must restart from an untouched signed Dependabot source and regenerate all interpreter locks."
+        if published_pip else
+        "This stale signed Dependabot source requires regeneration on accepted main. Native "
+        "recreate is permitted only after a verified rebase lease expired without a new head."
+    )
     owner_api.post(
         f"/issues/{number}/comments",
         {"body": (
             f"@dependabot {command}\n\n"
-            f"{marker}\n"
-            + (
-                "Requested by the configured push-capable repository owner because this published "
-                "pip PR is stale. Recreate removes the derived lock-publisher commit so Dependabot "
-                "can regenerate a canonical source directly on current main; the trusted publisher "
-                "must then regenerate all interpreter locks before qualification restarts."
-                if published_pip
-                else
-                "Requested by the configured push-capable repository owner because the exact "
-                "Dependabot source commit is no longer parented on current main. Qualification "
-                "restarts on the new exact head; no merge or security gate is bypassed."
-            )
+            f"{marker(command)}\n"
+            f"{purpose} Every replacement requires new signed provenance and exact-head CI, "
+            "extended, security, docs and owner approval. No ref mutation or gate bypass."
         )},
     )
     return True
