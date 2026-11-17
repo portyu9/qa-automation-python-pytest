@@ -1609,7 +1609,7 @@ def request_dependabot_refresh(
         return True
 
     purpose = (
-        "This published pip PR contains a derived lock-publisher commit; native recreate "
+        "This published pip PR contains a derived trusted publisher lock commit; native recreate "
         "must restart from an untouched signed Dependabot source and regenerate all interpreter locks."
         if published_pip else
         "This stale signed Dependabot source requires regeneration on accepted main. Native "
