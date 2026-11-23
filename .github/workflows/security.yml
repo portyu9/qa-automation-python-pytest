@@ -69,13 +69,13 @@ jobs:
           python .github/scripts/validate_codeql_sarif_selfcheck.py
           python .github/scripts/validate_security_stack.py
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           languages: python,actions
           queries: security-extended
       - name: Analyze
         id: analyze-source
-        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           output: reports/security/codeql-source
       - name: Enforce zero CodeQL alerts
@@ -218,7 +218,7 @@ jobs:
           fi
       - name: Review dependency changes
         if: steps.dependency-graph.outputs.available == 'true'
-        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
         with:
           fail-on-severity: high
           base-ref: ${{ github.event.pull_request.base.sha || inputs.governance-base-sha }}
