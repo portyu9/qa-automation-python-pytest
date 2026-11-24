@@ -1491,6 +1491,16 @@ def verify_owner_identity(owner_api: GitHubApi | None, config: dict[str, Any]) -
         )
 
 
+def verify_scheduled_owner_readiness(
+    event_name: str, owner_api: GitHubApi | None, config: dict[str, Any]
+) -> dict[str, Any]:
+    """Refuse a green idle schedule unless the exact configured owner authenticates."""
+    if event_name != "schedule":
+        return {"checked": False}
+    verify_owner_identity(owner_api, config)
+    return {"checked": True, "identity": "verified"}
+
+
 def has_exact_owner_approval(owner_api: GitHubApi, number: int, head_sha: str, config: dict[str, Any]) -> bool:
     reviews = owner_api.paginate(f"/pulls/{number}/reviews")
     return any(
@@ -2047,6 +2057,7 @@ def main(argv: list[str] | None = None) -> int:
     allow_merge = os.environ.get("ALLOW_MERGE") == "true"
 
     if should_bulk_reconcile(event, event_name, config):
+        owner_readiness = verify_scheduled_owner_readiness(event_name, owner_api, config)
         pulls = api.paginate("/pulls?state=open")
         dependabot_pulls = [
             pull
@@ -2060,7 +2071,7 @@ def main(argv: list[str] | None = None) -> int:
                 api, owner_api, pull["number"], config, allow_merge
             ),
         )
-        print(json.dumps({"reconciled": len(results), "failed": failures}, indent=2))
+        print(json.dumps({"reconciled": len(results), "failed": failures, "ownerReadiness": owner_readiness}, indent=2))
         if failures:
             raise GovernanceError(
                 f"bulk dependency governance failed for {len(failures)} PR(s)"
