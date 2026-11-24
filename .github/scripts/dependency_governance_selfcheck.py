@@ -156,9 +156,11 @@ class DependencyGovernanceTests(unittest.TestCase):
         wrong_id = OwnerApi(CONFIG["ownerApprovalLogin"], CONFIG["ownerApprovalUserId"] + 1)
         with self.assertRaisesRegex(GovernanceError, "configured repository owner identity"):
             verify_scheduled_owner_readiness("schedule", wrong_id, CONFIG)
-        with patch.object(valid, "get", side_effect=GovernanceError("expired owner token")):
-            with self.assertRaisesRegex(GovernanceError, "expired owner token"):
-                verify_scheduled_owner_readiness("schedule", valid, CONFIG)
+        with (
+            patch.object(valid, "get", side_effect=GovernanceError("expired owner token")),
+            self.assertRaisesRegex(GovernanceError, "expired owner token"),
+        ):
+            verify_scheduled_owner_readiness("schedule", valid, CONFIG)
 
     def test_readiness_does_not_touch_owner_in_non_scheduled_events(self) -> None:
         class UnexpectedOwner:
